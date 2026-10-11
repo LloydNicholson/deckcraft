@@ -932,6 +932,36 @@ mod tests {
         assert_eq!(harness.state().session.documents().len(), 2);
     }
 
+    /// #172: a recent file that was moved or deleted is marked on the start screen, clicking it
+    /// says so there (the status bar isn't shown), and it can be removed from the list.
+    #[test]
+    fn start_screen_flags_a_recent_file_that_is_gone() {
+        use egui_kittest::kittest::Queryable as _;
+        let gone = std::env::temp_dir().join(format!("deckcraft-gone-{}.deckcraft", std::process::id()));
+        let _ = std::fs::remove_file(&gone);
+        let gone = gone.to_string_lossy().to_string();
+        let mut app = SlideApp::new(Session::new(), Services::default());
+        app.ui.recent = vec![gone.clone()];
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            app,
+        );
+        harness.run_steps(2);
+        harness.get_by_label("Not found");
+
+        harness.get_by_label(&gone).click();
+        harness.run_steps(2);
+        assert!(harness.state().session.documents().is_empty());
+        harness.get_by_label_contains("Couldn't find");
+
+        harness.get_by_label("Remove from list").click();
+        harness.run_steps(2);
+        assert!(harness.state().ui.recent.is_empty());
+    }
+
     #[test]
     fn home_needs_an_open_presentation() {
         let mut app = SlideApp::new(Session::new(), Services::default());
