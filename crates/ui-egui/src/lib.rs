@@ -962,6 +962,31 @@ mod tests {
         assert!(harness.state().ui.recent.is_empty());
     }
 
+    /// #172: a path too long for the window is cut short, so Remove from list stays on screen.
+    #[test]
+    fn remove_from_list_stays_on_screen_for_a_long_path() {
+        use egui_kittest::kittest::Queryable as _;
+        let gone = std::env::temp_dir()
+            .join("a-folder-name-long-enough-to-run-past-the-edge-of-a-narrow-window")
+            .join(format!("gone-{}.deckcraft", std::process::id()));
+        let mut app = SlideApp::new(Session::new(), Services::default());
+        app.ui.recent = vec![gone.to_string_lossy().to_string()];
+        let width = 600.0;
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(width, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            app,
+        );
+        harness.run_steps(2);
+        let button = harness.get_by_label("Remove from list").rect();
+        assert!(button.max.x <= width, "button ends at {} in a {width}-wide window", button.max.x);
+        harness.get_by_label("Remove from list").click();
+        harness.run_steps(2);
+        assert!(harness.state().ui.recent.is_empty());
+    }
+
     #[test]
     fn home_needs_an_open_presentation() {
         let mut app = SlideApp::new(Session::new(), Services::default());

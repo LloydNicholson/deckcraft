@@ -897,15 +897,30 @@ pub fn start_screen(app: &mut SlideApp, ui: &mut Ui) {
             });
             for p in app.ui.recent.clone() {
                 ui.horizontal(|ui| {
+                    // The same 40-point inset on the right as on the left.
+                    ui.set_max_width(ui.available_width() - 40.0);
                     ui.add_space(40.0);
+                    // A path too long for the window is cut short (the whole path shows on hover).
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                     if file_is_gone(&p) {
                         let name = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(p.clone());
+                        let note = egui::RichText::new("Not found").font(theme::font(12.0)).color(t.text_dim);
+                        let remove = "Remove from list";
+                        // Leave room after the path for the note and the button.
+                        let s = ui.spacing();
+                        let after = text_width(ui, note.clone()) + text_width(ui, remove) + 2.0 * s.button_padding.x + 2.0 * s.item_spacing.x;
                         let link = egui::Link::new(egui::RichText::new(&p).color(t.text_faint).strikethrough());
-                        if ui.add(link).on_hover_text("This file was moved, renamed or deleted").clicked() {
+                        let resp = ui
+                            .scope(|ui| {
+                                ui.set_max_width((ui.available_width() - after).max(60.0));
+                                ui.add(link)
+                            })
+                            .inner;
+                        if resp.on_hover_text("This file was moved, renamed or deleted").clicked() {
                             app.set_status(format!("Couldn't find {name}. It may have been moved, renamed or deleted."));
                         }
-                        ui.label(egui::RichText::new("Not found").font(theme::font(12.0)).color(t.text_dim));
-                        if ui.small_button("Remove from list").clicked() {
+                        ui.label(note);
+                        if ui.small_button(remove).clicked() {
                             app.ui.recent.retain(|r| *r != p);
                         }
                     } else if ui.link(&p).clicked()
@@ -936,6 +951,11 @@ pub fn start_screen(app: &mut SlideApp, ui: &mut Ui) {
             ui.hyperlink_to("Join the ArtCraft community on Discord", deckcraft_engine::links::DISCORD);
         });
     });
+}
+
+/// Width of `text` on one line, as a label or button would lay it out.
+fn text_width(ui: &Ui, text: impl Into<egui::WidgetText>) -> f32 {
+    text.into().into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x
 }
 
 /// A recent file that's no longer on disk (moved, renamed or deleted). The browser has no paths.
