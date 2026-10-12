@@ -107,7 +107,14 @@ fn open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
 /// Encode the presentation in `format` (`deckcraft`, `pptx`, `outline`).
 pub fn save_bytes(doc: &Presentation, format: &str) -> Result<Vec<u8>> {
     match format {
-        "pptx" | "potx" | "ppsx" => deckcraft_pptx::export(doc).map_err(|e| EngineError::Other(e.to_string())),
+        "pptx" | "potx" | "ppsx" => {
+            let kind = match format {
+                "potx" => deckcraft_pptx::PackageKind::Template,
+                "ppsx" => deckcraft_pptx::PackageKind::Slideshow,
+                _ => deckcraft_pptx::PackageKind::Presentation,
+            };
+            deckcraft_pptx::export_as(doc, kind).map_err(|e| EngineError::Other(e.to_string()))
+        }
         "outline" | "txt" => Ok(deckcraft_format::slides_to_outline(doc).into_bytes()),
         "pdf" => deckcraft_pdf::export(doc, &Default::default()).map_err(|e| EngineError::Other(e.to_string())),
         _ => deckcraft_format::save(doc).map_err(|e| EngineError::Other(e.to_string())),

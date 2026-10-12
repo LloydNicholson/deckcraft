@@ -51,7 +51,23 @@ pub fn import(bytes: &[u8]) -> Result<Presentation, PptxError> {
 
 /// Write a `.pptx` package.
 pub fn export(p: &Presentation) -> Result<Vec<u8>, PptxError> {
-    write::export(p)
+    write::export(p, PackageKind::Presentation)
+}
+
+/// Which PresentationML package to write. They differ only in the main part's content type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageKind {
+    /// `.pptx`
+    Presentation,
+    /// `.potx`: opens as a new untitled presentation.
+    Template,
+    /// `.ppsx`: opens straight into the slide show.
+    Slideshow,
+}
+
+/// Write a `.pptx`, `.potx` or `.ppsx` package.
+pub fn export_as(p: &Presentation, kind: PackageKind) -> Result<Vec<u8>, PptxError> {
+    write::export(p, kind)
 }
 
 /// Content type for a file name's extension.

@@ -20,6 +20,8 @@ use crate::opc::{self, NS_A, NS_P, NS_P14, NS_R, PackageOut, RelsOut};
 use crate::xml::{A, W};
 
 const CT_PRES: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
+const CT_TEMPLATE: &str = "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml";
+const CT_SLIDESHOW: &str = "application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml";
 const CT_SLIDE: &str = "application/vnd.openxmlformats-officedocument.presentationml.slide+xml";
 const CT_LAYOUT: &str = "application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml";
 const CT_MASTER: &str = "application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml";
@@ -360,7 +362,7 @@ fn sanitized(p: &Presentation) -> std::borrow::Cow<'_, Presentation> {
     std::borrow::Cow::Owned(q)
 }
 
-pub fn export(p: &Presentation) -> Result<Vec<u8>, PptxError> {
+pub fn export(p: &Presentation, kind: crate::PackageKind) -> Result<Vec<u8>, PptxError> {
     let p = sanitized(p);
     let p: &Presentation = &p;
     let mut x = Exp {
@@ -500,7 +502,12 @@ pub fn export(p: &Presentation) -> Result<Vec<u8>, PptxError> {
     let ts = crate::tables::table_styles_xml(&x.table_styles);
     x.pkg.xml_part("ppt/tableStyles.xml", CT_TABLE_STYLES, ts);
     let pxml = presentation_xml(&mut x, &mut pres, &master_rids, notes_master_rid.as_deref(), &slide_rids);
-    x.pkg.xml_part("ppt/presentation.xml", CT_PRES, pxml);
+    let main_ct = match kind {
+        crate::PackageKind::Presentation => CT_PRES,
+        crate::PackageKind::Template => CT_TEMPLATE,
+        crate::PackageKind::Slideshow => CT_SLIDESHOW,
+    };
+    x.pkg.xml_part("ppt/presentation.xml", main_ct, pxml);
     x.pkg.rels("ppt/presentation.xml", &pres.rels);
 
     // Document properties and package relationships.

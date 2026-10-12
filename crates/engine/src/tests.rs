@@ -543,3 +543,30 @@ fn inserted_hyperlinks_look_like_links() {
     s.execute("format.underline", &json!({})).unwrap();
     assert_eq!(s.execute("format.state", &json!({})).unwrap()["underline"], false);
 }
+
+/// `[Content_Types].xml`'s content type for `/ppt/presentation.xml` in a saved package.
+fn main_part_content_type(bytes: &[u8]) -> String {
+    use std::io::Read;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut xml = String::new();
+    zip.by_name("[Content_Types].xml").unwrap().read_to_string(&mut xml).unwrap();
+    let at = xml.find("PartName=\"/ppt/presentation.xml\"").unwrap();
+    let ct = &xml[at..];
+    let start = ct.find("ContentType=\"").unwrap() + "ContentType=\"".len();
+    ct[start..start + ct[start..].find('"').unwrap()].to_string()
+}
+
+#[test]
+fn templates_and_slideshows_are_saved_with_their_own_main_content_type() {
+    let doc = session().doc().unwrap().doc.clone();
+    for (format, kind) in [("pptx", "presentation"), ("potx", "template"), ("ppsx", "slideshow")] {
+        let bytes = crate::cmd::file::save_bytes(&doc, format).unwrap();
+        assert_eq!(
+            main_part_content_type(&bytes),
+            format!("application/vnd.openxmlformats-officedocument.presentationml.{kind}.main+xml"),
+            "{format}"
+        );
+        let back = crate::cmd::file::open_presentation(&format!("deck.{format}"), &bytes).unwrap();
+        assert_eq!(back.slides.len(), doc.slides.len(), "{format}");
+    }
+}
