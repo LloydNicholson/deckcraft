@@ -119,9 +119,10 @@ fn effects_tables_charts_render() {
     all.extend(charts);
     let p = deck_with(all);
     let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
-    // Shadow darkens below-right of the shape.
-    let px = img.pixel(258, 156);
-    assert!(px[0] < 250, "{px:?}");
+    // Shadow darkens below-right of the shape (grey, past the glow), blurred by a third of its
+    // 8 pt blur radius.
+    let px = img.pixel(255, 155);
+    assert!(px[0] < 240 && px[0] == px[2], "{px:?}");
 }
 
 #[test]
@@ -522,4 +523,748 @@ fn hyperlinks_draw_in_the_hyperlink_colour_underlined() {
     assert_eq!(diff(&own, &px(&run_deck(RunProps { fill: red.clone(), ..Default::default() }))), 0);
     let own = px(&run_deck(RunProps { link, fill: red.clone(), ..Default::default() }));
     assert_eq!(diff(&own, &px(&run_deck(RunProps { fill: red, underline: Some("sng".into()), ..Default::default() }))), 0);
+}
+
+#[test]
+fn a_linear_gradient_ramps_like_powerpoint() {
+    // Black to white, left to right: PowerPoint draws 105 a quarter of the way and 186 half way
+    // (linear-light mix, S-shaped), not 64 and 128.
+    use deckcraft_model::style::{Fill, Gradient, GradientShape, GradientStop};
+    let stop = |pos, c| GradientStop { pos, color: ColorRef::rgb(c) };
+    let sh = Shape {
+        id: ShapeId(700),
+        xfrm: Some(Xfrm::new(0.0, 0.0, 800.0, 100.0)),
+        fill: Some(Fill::Gradient(Gradient {
+            stops: vec![stop(0.0, deckcraft_color::Rgba::rgb(0, 0, 0)), stop(1.0, deckcraft_color::Rgba::rgb(255, 255, 255))],
+            shape: GradientShape::Linear { angle: 0.0, scaled: false },
+            rotate_with_shape: true,
+        })),
+        line: Some(deckcraft_model::style::Line { fill: Some(Fill::None), ..Default::default() }),
+        ..Default::default()
+    };
+    let p = deck_with(vec![sh]);
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    for (x, want) in [(200, 105), (400, 186), (600, 238)] {
+        let got = img.pixel(x, 50)[0] as i32;
+        assert!((got - want).abs() <= 4, "x {x}: {got} vs {want}");
+    }
+}
+
+#[test]
+fn a_gradient_with_a_stop_off_the_end_stays_linear() {
+    // Stops at 20 % and 100 %: PowerPoint blends linearly in sRGB (96 at 50 %, 175 at 75 %).
+    use deckcraft_model::style::{Fill, Gradient, GradientShape, GradientStop};
+    let stop = |pos, c| GradientStop { pos, color: ColorRef::rgb(c) };
+    let sh = Shape {
+        id: ShapeId(701),
+        xfrm: Some(Xfrm::new(0.0, 0.0, 800.0, 100.0)),
+        fill: Some(Fill::Gradient(Gradient {
+            stops: vec![stop(0.2, deckcraft_color::Rgba::rgb(0, 0, 0)), stop(1.0, deckcraft_color::Rgba::rgb(255, 255, 255))],
+            shape: GradientShape::Linear { angle: 0.0, scaled: false },
+            rotate_with_shape: true,
+        })),
+        line: Some(deckcraft_model::style::Line { fill: Some(Fill::None), ..Default::default() }),
+        ..Default::default()
+    };
+    let p = deck_with(vec![sh]);
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    for (x, want) in [(400, 96), (600, 175)] {
+        let got = img.pixel(x, 50)[0] as i32;
+        assert!((got - want).abs() <= 4, "x {x}: {got} vs {want}");
+    }
+}
+
+#[test]
+fn a_shape_filled_with_the_background_shows_the_slide_background() {
+    // `useBgFill`: PowerPoint paints the slide's background into the shape, laid out on the
+    // slide. A white panel covers a black-to-grey background; a shape on it with the background
+    // fill is a window onto that background.
+    use deckcraft_model::style::{Fill, Gradient, GradientShape, GradientStop};
+    let none = || Some(deckcraft_model::style::Line { fill: Some(Fill::None), ..Default::default() });
+    let panel = Shape {
+        id: ShapeId(710),
+        xfrm: Some(Xfrm::new(0.0, 0.0, 960.0, 540.0)),
+        fill: Some(Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(255, 255, 255)))),
+        line: none(),
+        ..Default::default()
+    };
+    let window = Shape {
+        id: ShapeId(711),
+        xfrm: Some(Xfrm::new(100.0, 100.0, 760.0, 340.0)),
+        fill: Some(Fill::Background),
+        line: none(),
+        ..Default::default()
+    };
+    let mut p = deck_with(vec![panel, window]);
+    let stop = |pos, v| GradientStop { pos, color: ColorRef::rgb(deckcraft_color::Rgba::rgb(v, v, v)) };
+    std::sync::Arc::make_mut(&mut p.slides[0]).background = Some(deckcraft_model::Background::Fill {
+        fill: Fill::Gradient(Gradient {
+            stops: vec![stop(0.0, 0), stop(0.5, 0), stop(1.0, 200)],
+            shape: GradientShape::Linear { angle: 0.0, scaled: false },
+            rotate_with_shape: true,
+        }),
+    });
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    assert_eq!(img.pixel(50, 50)[0], 255, "the panel stays white outside the window");
+    assert!(img.pixel(300, 270)[0] < 8, "the window shows the background's black half: {:?}", img.pixel(300, 270));
+    // Laid out on the slide: three quarters across the slide is half way from black to grey.
+    let v = img.pixel(720, 270)[0] as i32;
+    assert!((v - 100).abs() <= 6, "{v}");
+}
+
+#[test]
+fn a_background_is_laid_over_white() {
+    // A background picture stretched into the bottom-right quarter (fillRect l=50% t=50%), and a
+    // half-transparent colour: PowerPoint shows white around and under them, not transparency.
+    use deckcraft_model::style::{Fill, PictureFill, PictureMode};
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([0, 0, 200]))).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let mut p = deck_with(vec![]);
+    let media = p.add_media("bg.png", "image/png", png.into_inner());
+    let pf = PictureFill { media, mode: PictureMode::Stretch { fill_rect: [0.5, 0.5, 0.0, 0.0] }, ..Default::default() };
+    std::sync::Arc::make_mut(&mut p.slides[0]).background = Some(deckcraft_model::Background::Fill { fill: Fill::Picture(pf) });
+    let img = render_slide(&p, 0, &RenderOpts { scale: 0.5, ..Default::default() });
+    assert_eq!(img.pixel(20, 20), [255, 255, 255, 255], "white where the picture doesn't reach");
+    let q = img.pixel(400, 230);
+    assert!(q[2] > 190 && q[0] < 10 && q[3] == 255, "{q:?}");
+    let see_through = ColorRef::rgb(deckcraft_color::Rgba { r: 0, g: 0, b: 0, a: 128 });
+    std::sync::Arc::make_mut(&mut p.slides[0]).background = Some(deckcraft_model::Background::Fill { fill: Fill::solid(see_through) });
+    let img = render_slide(&p, 0, &RenderOpts { scale: 0.5, ..Default::default() });
+    let g = img.pixel(20, 20);
+    assert!(g[3] == 255 && (g[0] as i32 - 127).abs() <= 3, "half-transparent black over white is grey: {g:?}");
+}
+
+#[test]
+fn colour_glyphs_paint_their_layers() {
+    // A COLRv0 test font (crates/render/tests/fixtures): U+E000 is a red square with a blue
+    // square in its middle, U+E001 a square in the text colour.
+    deckcraft_fonts::FontDb::global().add_font(include_bytes!("../tests/fixtures/colr-squares.ttf").to_vec());
+    let mut sh = Shape { id: ShapeId(720), xfrm: Some(Xfrm::new(0.0, 0.0, 400.0, 200.0)), text_box: true, ..Default::default() };
+    let mut t = TextBody::from_text("\u{E000} \u{E001}");
+    let props = &mut t.paragraphs[0].runs[0].props;
+    props.size = Some(72.0);
+    props.font = Some("DeckCraft Colr Squares".into());
+    props.fill = Some(deckcraft_model::style::Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 160, 0))));
+    sh.text = Some(t);
+    let p = deck_with(vec![sh]);
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    let count = |f: &dyn Fn(&[u8; 4]) -> bool| img.pixels.as_chunks::<4>().0.iter().filter(|px| f(px)).count();
+    let red = count(&|p| p[0] > 230 && p[1] < 30 && p[2] < 30);
+    let blue = count(&|p| p[0] < 30 && p[1] < 30 && p[2] > 230);
+    let green = count(&|p| p[0] < 30 && p[1] > 140 && p[1] < 180 && p[2] < 30);
+    // 72 pt squares: the blue one is 40 % of the side (16 % of the area).
+    assert!(red > 2500 && blue > 500, "red {red} blue {blue}");
+    let share = blue as f64 / (red + blue) as f64;
+    assert!((share - 0.16).abs() < 0.03, "blue share {share}");
+    // The text-colour glyph is as big as the other square.
+    assert!((green as f64 / (red + blue) as f64 - 1.0).abs() < 0.1, "green {green} vs {}", red + blue);
+}
+
+#[test]
+fn a_text_gradient_starts_over_on_every_line() {
+    // PowerPoint fills each line of gradient text with the whole gradient, spanning that line
+    // (black at the top of every line to white at its bottom), not the text box.
+    use deckcraft_model::style::{Fill, Gradient, GradientShape, GradientStop};
+    let stop = |pos, v| GradientStop { pos, color: ColorRef::rgb(deckcraft_color::Rgba::rgb(v, v, v)) };
+    let mut sh = Shape { id: ShapeId(730), xfrm: Some(Xfrm::new(0.0, 0.0, 600.0, 500.0)), text_box: true, ..Default::default() };
+    let mut t = TextBody::from_text("HHHH\nHHHH");
+    for p in &mut t.paragraphs {
+        let props = &mut p.runs[0].props;
+        props.size = Some(80.0);
+        props.fill = Some(Fill::Gradient(Gradient {
+            stops: vec![stop(0.0, 0), stop(1.0, 255)],
+            shape: GradientShape::Linear { angle: 90.0, scaled: false },
+            rotate_with_shape: true,
+        }));
+    }
+    sh.text = Some(t);
+    let p = deck_with(vec![sh]);
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    // Ink rows (any pixel not white), grouped into the two lines.
+    let ink = |y: u32| (0..600).any(|x| img.pixel(x, y)[0] < 250);
+    let mut bands: Vec<(u32, u32)> = vec![];
+    for y in 0..500 {
+        if ink(y) {
+            match bands.last_mut() {
+                Some(b) if b.1 + 1 == y => b.1 = y,
+                _ => bands.push((y, y)),
+            }
+        }
+    }
+    assert_eq!(bands.len(), 2, "{bands:?}");
+    // The darkest ink in the first rows of each line.
+    let top = |b: (u32, u32)| (b.0..b.0 + 6).flat_map(|y| (0..600).map(move |x| (x, y))).map(|(x, y)| img.pixel(x, y)[0]).min().unwrap();
+    let (a, b) = (top(bands[0]), top(bands[1]));
+    assert!(a < 140 && (a as i32 - b as i32).abs() < 25, "line tops {a} and {b}: the second line starts dark again");
+    // ...and each line ends light.
+    let bottom = |b: (u32, u32)| (b.1 - 5..=b.1).flat_map(|y| (0..600).map(move |x| (x, y))).map(|(x, y)| img.pixel(x, y)[0]).min().unwrap();
+    for band in bands {
+        assert!(bottom(band) > 150, "line {band:?} ends at {}", bottom(band));
+    }
+}
+
+/// A text box of big black "IIII" with `set` applied to its run.
+fn effect_text(set: impl Fn(&mut deckcraft_model::text::RunProps)) -> Presentation {
+    let mut sh = Shape { id: ShapeId(740), xfrm: Some(Xfrm::new(100.0, 100.0, 600.0, 300.0)), text_box: true, ..Default::default() };
+    let mut t = TextBody::from_text("IIII");
+    let props = &mut t.paragraphs[0].runs[0].props;
+    props.size = Some(100.0);
+    props.fill = Some(deckcraft_model::style::Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 0, 0))));
+    set(props);
+    sh.text = Some(t);
+    deck_with(vec![sh])
+}
+
+#[test]
+fn text_glow_and_shadow_are_drawn() {
+    let count = |img: &Image, f: &dyn Fn(&[u8; 4]) -> bool| img.pixels.as_chunks::<4>().0.iter().filter(|px| f(px)).count();
+    let green = |p: &[u8; 4]| p[1] > 150 && p[0] < 120 && p[2] < 120;
+    let plain = effect_text(|_| {});
+    assert!(!needs_filters(&plain, &plain.slides[0]));
+    let img = render_slide(&plain, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    assert_eq!(count(&img, &green), 0);
+    // Glow: a green halo hugging the letters, needing the blur filter.
+    let glow =
+        effect_text(|p| p.glow = Some(deckcraft_model::style::Glow { color: ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 255, 0)), radius: 8.0 }));
+    assert!(needs_filters(&glow, &glow.slides[0]), "text glow blurs");
+    let img = render_slide(&glow, 0, &RenderOpts { scale: 1.0, threads: 4, ..Default::default() });
+    let halo = count(&img, &green);
+    assert!(halo > 300, "green halo pixels {halo}");
+    // Shadow: grey ink below and right of the letters, where the plain text has none.
+    let shadow = effect_text(|p| {
+        p.shadow = Some(deckcraft_model::style::Shadow {
+            color: ColorRef::rgb(deckcraft_color::Rgba { r: 0, g: 0, b: 0, a: 128 }),
+            blur: 2.0,
+            dist: 12.0,
+            dir: 45.0,
+            inner: false,
+            sx: 1.0,
+            sy: 1.0,
+            kx: 0.0,
+            ky: 0.0,
+            align: String::new(),
+            rotate_with_shape: false,
+        })
+    });
+    let img = render_slide(&shadow, 0, &RenderOpts { scale: 1.0, threads: 4, ..Default::default() });
+    let base = render_slide(&plain, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    let grey = |p: &[u8; 4]| p[0] > 60 && p[0] < 230 && p[0] == p[1] && p[1] == p[2];
+    assert!(count(&img, &grey) > count(&base, &grey) + 300, "a grey shadow appears");
+}
+
+#[test]
+fn pattern_fills_draw_powerpoints_tiles() {
+    // dkVert at one output pixel per pattern cell (0.75 pt): columns 11001100… across, as
+    // PowerPoint's export draws it; pct50 is a checkerboard.
+    use deckcraft_model::style::{Fill, PatternFill};
+    let rgb = |v| ColorRef::rgb(deckcraft_color::Rgba::rgb(v, v, v));
+    let shape = |id, x: f64, preset: &str| Shape {
+        id: ShapeId(id),
+        xfrm: Some(Xfrm::new(x, 0.0, 60.0, 60.0)),
+        fill: Some(Fill::Pattern(PatternFill { preset: preset.into(), fg: rgb(0), bg: rgb(255) })),
+        line: Some(deckcraft_model::style::Line { fill: Some(Fill::None), ..Default::default() }),
+        ..Default::default()
+    };
+    let p = deck_with(vec![shape(750, 0.0, "dkVert"), shape(751, 120.0, "pct50")]);
+    let img = render_slide(&p, 0, &RenderOpts { scale: 4.0 / 3.0, ..Default::default() });
+    let dark = |x: u32, y: u32| img.pixel(x, y)[0] < 128;
+    let row: Vec<bool> = (8..16).map(|x| dark(x, 20)).collect();
+    assert_eq!(row, [true, true, false, false, true, true, false, false], "dkVert columns");
+    assert!((8..16).all(|y| dark(8, y) == dark(8, 20)), "dkVert is vertical");
+    // pct50 starts at slide x = 120 pt = 160 px.
+    for (x, y) in [(168, 8), (169, 9), (170, 12)] {
+        assert_ne!(dark(x, y), dark(x + 1, y), "pct50 alternates across at {x},{y}");
+        assert_eq!(dark(x, y), dark(x + 1, y + 1), "pct50 repeats diagonally at {x},{y}");
+    }
+}
+
+#[test]
+fn compound_lines_draw_their_bands() {
+    // A 24 pt outline on a rectangle, as PowerPoint's export draws each kind (top edge, outside
+    // first): double 8/8/8, thin-thick 4.8/4.8/14.4, triple 4/4/8/4/4.
+    use deckcraft_model::style::{Compound, Fill, Line};
+    let runs = |c: Compound| {
+        let sh = Shape {
+            id: ShapeId(760),
+            xfrm: Some(Xfrm::new(100.0, 100.0, 300.0, 200.0)),
+            fill: Some(Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(255, 255, 255)))),
+            line: Some(Line {
+                fill: Some(Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 0, 0)))),
+                width: Some(24.0),
+                compound: Some(c),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let p = deck_with(vec![sh]);
+        let img = render_slide(&p, 0, &RenderOpts { scale: 2.0, ..Default::default() });
+        // Down the middle of the top edge (y 100 pt), from 80 pt to 120 pt: lengths of dark and
+        // light runs in points.
+        let mut out: Vec<(bool, f64)> = vec![];
+        for y in 160..240 {
+            let dark = img.pixel(500, y)[0] < 128;
+            match out.last_mut() {
+                Some((d, n)) if *d == dark => *n += 0.5,
+                _ => out.push((dark, 0.5)),
+            }
+        }
+        out.into_iter().filter(|(d, _)| *d).map(|(_, n)| n).collect::<Vec<f64>>()
+    };
+    let close = |got: Vec<f64>, want: &[f64]| got.len() == want.len() && got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 1.0);
+    assert!(close(runs(Compound::Single), &[24.0]));
+    let d = runs(Compound::Double);
+    assert!(close(d.clone(), &[8.0, 8.0]), "{d:?}");
+    let t = runs(Compound::ThinThick);
+    assert!(close(t.clone(), &[4.8, 14.4]), "{t:?}");
+    let k = runs(Compound::ThickThin);
+    assert!(close(k.clone(), &[14.4, 4.8]), "{k:?}");
+    let tri = runs(Compound::Triple);
+    assert!(close(tri.clone(), &[4.0, 8.0, 4.0]), "{tri:?}");
+}
+
+#[test]
+fn rect_path_gradients_draw_x_shaped_contours() {
+    // path="rect" from the centre, black to grey to white (linear): PowerPoint's colour position is
+    // the larger axis share, so 20 pt right of centre in a 280x200 box is 1/7 and 20 pt down 1/5.
+    use deckcraft_model::style::{Fill, Gradient, GradientShape, GradientStop};
+    let stop = |pos, v| GradientStop { pos, color: ColorRef::rgb(deckcraft_color::Rgba::rgb(v, v, v)) };
+    let sh = Shape {
+        id: ShapeId(770),
+        xfrm: Some(Xfrm::new(0.0, 0.0, 280.0, 200.0)),
+        fill: Some(Fill::Gradient(Gradient {
+            stops: vec![stop(0.0, 0), stop(0.5, 128), stop(1.0, 255)],
+            shape: GradientShape::Path { path: "rect".into(), focus: [0.5, 0.5, 0.5, 0.5] },
+            rotate_with_shape: true,
+        })),
+        line: Some(deckcraft_model::style::Line { fill: Some(Fill::None), ..Default::default() }),
+        ..Default::default()
+    };
+    let p = deck_with(vec![sh]);
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    let v = |x: u32, y: u32| img.pixel(x, y)[0] as f64;
+    assert!((v(160, 100) - 255.0 / 7.0).abs() < 6.0, "{}", v(160, 100));
+    assert!((v(140, 120) - 51.0).abs() < 6.0, "{}", v(140, 120));
+    // Along the diagonal to a corner the colour follows the vertical share.
+    assert!((v(168, 120) - 51.0).abs() < 6.0, "{}", v(168, 120));
+}
+
+#[test]
+fn soft_edges_fade_to_the_outline() {
+    // An ellipse with a 12 pt soft edge: transparent at its outline, half opaque about 10 pt
+    // inside, opaque further in, as in PowerPoint's export (the fade follows the curve, not the
+    // bounding box).
+    let sh = Shape {
+        id: ShapeId(780),
+        xfrm: Some(Xfrm::new(100.0, 100.0, 300.0, 200.0)),
+        geom: Geom::Preset { name: "ellipse".into(), adj: vec![] },
+        fill: Some(deckcraft_model::style::Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 0, 0)))),
+        line: Some(deckcraft_model::style::Line { fill: Some(deckcraft_model::style::Fill::None), ..Default::default() }),
+        effects: Some(deckcraft_model::Effects { soft_edge: Some(12.0), ..Default::default() }),
+        ..Default::default()
+    };
+    let p = deck_with(vec![sh]);
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    let alpha = |x: u32, y: u32| 1.0 - img.pixel(x, y)[0] as f64 / 255.0;
+    // Top of the ellipse is at y = 100, x = 250.
+    assert!(alpha(250, 101) < 0.08, "edge {}", alpha(250, 101));
+    let mid = alpha(250, 110);
+    assert!((0.3..0.7).contains(&mid), "0.85 r inside: {mid}");
+    assert!(alpha(250, 130) > 0.97, "inside {}", alpha(250, 130));
+    // Near the ends of the bounding box's top edge, outside the ellipse, nothing is drawn.
+    assert!(alpha(110, 105) < 0.01);
+}
+
+#[test]
+fn a_file_defined_table_style_draws_its_parts() {
+    // Red table background (tblBg), see-through white on banded rows, a 4 pt blue left border and
+    // no inside lines: drawn from the definition, not DeckCraft's own look for the style.
+    use deckcraft_model::style::{Fill, Line};
+    use deckcraft_model::table::{TableBorder, TablePart, TablePartStyle, TableStyleDef};
+    let rgb = |r, g, b| ColorRef::rgb(deckcraft_color::Rgba::rgb(r, g, b));
+    let mut t = Table::new(4, 2, 400.0, 50.0);
+    t.style = "{ABCDEF01-2345-4678-9ABC-DEF012345678}".into();
+    t.first_row = false;
+    t.band_row = true;
+    let line = |c: ColorRef, w| TableBorder::Line { line: Line { fill: Some(Fill::solid(c)), width: Some(w), ..Default::default() } };
+    let mut whole = TablePartStyle { fill: Some(Fill::None), ..Default::default() };
+    whole.borders[0] = Some(line(rgb(0, 0, 255), 4.0));
+    whole.borders[4] = Some(TableBorder::Line { line: Line { fill: Some(Fill::None), ..Default::default() } });
+    let see_through = ColorRef::rgb(deckcraft_color::Rgba { r: 255, g: 255, b: 255, a: 51 });
+    let band = TablePartStyle { fill: Some(Fill::solid(see_through)), ..Default::default() };
+    let def = TableStyleDef {
+        id: t.style.clone(),
+        name: "Probe".into(),
+        parts: vec![(TablePart::WholeTbl, whole), (TablePart::Band1H, band)],
+        background: Some(TablePartStyle { fill: Some(Fill::solid(rgb(255, 0, 0))), ..Default::default() }),
+        raw: String::new(),
+    };
+    let tbl = Shape { id: ShapeId(790), xfrm: Some(Xfrm::new(100.0, 100.0, 400.0, 200.0)), kind: ShapeKind::Table(t), ..Default::default() };
+    let mut p = deck_with(vec![tbl]);
+    p.table_styles.push(def);
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    let px = |x, y| img.pixel(x, y);
+    // Row 1 (band1H): red with 20 % white over it; row 2 (band2H, undefined): plain red.
+    let banded = px(300, 125);
+    assert!(banded[0] > 250 && (40..65).contains(&banded[1]), "{banded:?}");
+    assert_eq!(px(300, 175)[..3], [255, 0, 0]);
+    // No line between the rows; a blue left border.
+    let edge = px(300, 150);
+    assert!(edge[0] > 240, "no inside line: {edge:?}");
+    let left = px(100, 175);
+    assert!(left[2] > 200 && left[0] < 60, "{left:?}");
+}
+
+#[test]
+fn a_table_fill_shows_behind_cells_without_their_own() {
+    // `a:tblPr` solidFill (tdf#127237): cells with no fill show the table's blue.
+    use deckcraft_model::style::Fill;
+    let mut t = Table::new(2, 2, 200.0, 50.0);
+    t.style = "none".into();
+    t.background = Some(Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 112, 192))));
+    for r in 0..2 {
+        for c in 0..2 {
+            t.cell_mut(r, c).unwrap().fill = Some(Fill::None);
+        }
+    }
+    let tbl = Shape { id: ShapeId(795), xfrm: Some(Xfrm::new(100.0, 100.0, 200.0, 100.0)), kind: ShapeKind::Table(t), ..Default::default() };
+    let p = deck_with(vec![tbl]);
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    assert_eq!(img.pixel(150, 160)[..3], [0, 112, 192]);
+    assert_eq!(img.pixel(50, 50)[..3], [255, 255, 255]);
+}
+
+/// A white 280x200 pt rectangle at (20, 20) with `effects`, rendered at 1 px/pt.
+fn effect_box(effects: deckcraft_model::Effects) -> Image {
+    use deckcraft_model::style::{Fill, Line};
+    let sh = Shape {
+        id: ShapeId(800),
+        xfrm: Some(Xfrm::new(20.0, 20.0, 280.0, 200.0)),
+        fill: Some(Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(255, 255, 255)))),
+        line: Some(Line { fill: Some(Fill::None), ..Default::default() }),
+        effects: Some(effects),
+        ..Default::default()
+    };
+    render_slide(&deck_with(vec![sh]), 0, &RenderOpts { scale: 1.0, ..Default::default() })
+}
+
+fn shadow(blur: f64, dist: f64, dir: f64) -> deckcraft_model::style::Shadow {
+    deckcraft_model::style::Shadow {
+        color: ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 0, 0)),
+        blur,
+        dist,
+        dir,
+        inner: false,
+        sx: 1.0,
+        sy: 1.0,
+        kx: 0.0,
+        ky: 0.0,
+        align: String::new(),
+        rotate_with_shape: false,
+    }
+}
+
+#[test]
+fn shadows_and_glows_spread_like_powerpoints() {
+    let red = |img: &Image, x: u32, y: u32| img.pixel(x, y)[0] as i32;
+    // Outer shadow, 9 pt blur, no offset: PowerPoint's export reads 144, 204, 238 at 1, 3 and 5
+    // px outside the left edge.
+    let img = effect_box(deckcraft_model::Effects { outer_shadow: Some(shadow(9.0, 0.0, 0.0)), ..Default::default() });
+    for (d, want) in [(1, 144), (3, 204), (5, 238)] {
+        assert!((red(&img, 20 - d, 120) - want).abs() <= 6, "outer {d}: {}", red(&img, 20 - d, 120));
+    }
+    // Inner shadow pointing down-right (45 degrees): it falls inside along the bottom and right
+    // edges, not the top and left.
+    let mut sh = shadow(0.0, 10.0, 45.0);
+    sh.inner = true;
+    let img = effect_box(deckcraft_model::Effects { inner_shadow: Some(sh), ..Default::default() });
+    assert!(red(&img, 296, 120) < 20, "right edge {}", red(&img, 296, 120));
+    assert!(red(&img, 160, 216) < 20, "bottom edge {}", red(&img, 160, 216));
+    assert!(red(&img, 24, 120) > 250 && red(&img, 160, 24) > 250, "top and left stay clear");
+    // Inner shadow with a 9 pt blur and no offset: the same profile as the outer one, inside.
+    let mut sh = shadow(9.0, 0.0, 0.0);
+    sh.inner = true;
+    let img = effect_box(deckcraft_model::Effects { inner_shadow: Some(sh), ..Default::default() });
+    for (d, want) in [(0, 144), (2, 204), (4, 238)] {
+        assert!((red(&img, 20 + d, 120) - want).abs() <= 6, "inner {d}: {}", red(&img, 20 + d, 120));
+    }
+    // Glow of radius 10 pt: nearly solid 1 px out, about half strength 5 px out, gone by 10.
+    let glow = deckcraft_model::style::Glow { color: ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 0, 0)), radius: 10.0 };
+    let img = effect_box(deckcraft_model::Effects { glow: Some(glow), ..Default::default() });
+    assert!(red(&img, 19, 120) < 20);
+    assert!((60..170).contains(&red(&img, 15, 120)), "{}", red(&img, 15, 120));
+    assert!(red(&img, 10, 120) > 245);
+}
+
+/// A 400 × 200 text box at (100, 100) holding `text` at 40 pt, warped by `warp`.
+fn wordart(warp: Option<&str>, text: &str) -> Presentation {
+    let mut t = TextBody::from_text(text);
+    t.paragraphs[0].runs[0].props.size = Some(40.0);
+    t.paragraphs[0].props.align = Some(deckcraft_model::text::Align::Center);
+    t.body.warp = warp.map(String::from);
+    deck_with(vec![Shape { id: ShapeId(700), xfrm: Some(Xfrm::new(100.0, 100.0, 400.0, 200.0)), text: Some(t), ..Default::default() }])
+}
+
+/// Ink box (x0, y0, x1, y1) of dark pixels, and the top ink row of each column.
+fn ink(img: &Image) -> ((u32, u32, u32, u32), Vec<Option<u32>>) {
+    let mut b = (u32::MAX, u32::MAX, 0, 0);
+    let mut tops = vec![None; img.width as usize];
+    for y in 0..img.height {
+        for x in 0..img.width {
+            if img.pixel(x, y)[0] < 128 {
+                b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+                if tops[x as usize].is_none() {
+                    tops[x as usize] = Some(y);
+                }
+            }
+        }
+    }
+    (b, tops)
+}
+
+#[test]
+fn wordart_arch_up_lifts_the_middle_of_the_line() {
+    let o = RenderOpts { scale: 1.0, ..Default::default() };
+    let flat = render_slide(&wordart(None, "ARCHED WORDART"), 0, &o);
+    let arched = render_slide(&wordart(Some("textArchUp"), "ARCHED WORDART"), 0, &o);
+    assert!(diff_px(&flat, &arched) > 1000);
+    let ((fx0, _, fx1, _), ftops) = ink(&flat);
+    let ((ax0, ay0, ax1, _), atops) = ink(&arched);
+    let top_near = |tops: &[Option<u32>], x: u32| (x.saturating_sub(15)..x + 15).filter_map(|i| tops.get(i as usize).copied().flatten()).min();
+    // Flat text: the ends and the middle stand on one line.
+    let (fl, fm) = (top_near(&ftops, fx0 + 20).unwrap(), top_near(&ftops, (fx0 + fx1) / 2).unwrap());
+    assert!(fl.abs_diff(fm) < 4, "flat {fl} {fm}");
+    // Arched: the line follows the top of the ellipse inscribed in the box, so the middle is
+    // at the box top and the ends sit clearly lower.
+    let (al, am, ar) = (top_near(&atops, ax0 + 20).unwrap(), top_near(&atops, (ax0 + ax1) / 2).unwrap(), top_near(&atops, ax1 - 20).unwrap());
+    assert!(al > am + 10 && ar > am + 10, "arched {al} {am} {ar}");
+    // At the box top (y = 100), give or take the font: Linux's fallback face reaches 79.
+    assert!((70..=110).contains(&ay0), "arch top {ay0}");
+}
+
+#[test]
+fn wordart_plain_stretches_the_ink_over_the_text_rect() {
+    let img = render_slide(&wordart(Some("textPlain"), "PLAIN"), 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    let ((x0, y0, x1, y1), _) = ink(&img);
+    for (got, want) in [(x0, 100), (y0, 100), (x1, 499), (y1, 299)] {
+        assert!(got.abs_diff(want) <= 2, "ink box {:?}", (x0, y0, x1, y1));
+    }
+}
+
+#[test]
+fn unknown_or_absent_warps_draw_flat_text() {
+    let o = RenderOpts { scale: 0.5, ..Default::default() };
+    // Warm the font database first (other tests load fonts concurrently).
+    let _ = render_slide(&wordart(None, "FLAT"), 0, &o);
+    let flat = render_slide(&wordart(None, "FLAT"), 0, &o);
+    for w in ["textNoShape", "bogus", ""] {
+        assert_eq!(diff_px(&flat, &render_slide(&wordart(Some(w), "FLAT"), 0, &o)), 0, "{w}");
+    }
+}
+
+#[test]
+fn every_warp_preset_renders_text_inside_the_slide() {
+    let o = RenderOpts { scale: 0.5, ..Default::default() };
+    for name in
+        ["textArchUp", "textArchDown", "textCircle", "textButton", "textWave1", "textRingInside", "textCirclePour", "textDeflateInflateDeflate"]
+    {
+        let mut p = wordart(Some(name), "One line\nTwo line\nThree");
+        if let Some(b) = std::sync::Arc::make_mut(&mut p.slides[0]).shapes[0].text.as_mut() {
+            b.body.warp_adj = vec![f64::NAN, -1e12];
+        }
+        let img = render_slide(&p, 0, &o);
+        let ((x0, y0, x1, y1), _) = ink(&img);
+        assert!(x0 <= x1 && y0 <= y1, "{name}: no ink");
+    }
+}
+
+/// A placeable WMF, 2 × 1 inch (2880 × 1440 twips): a solid red brush and a rectangle over the
+/// left half, nothing on the right.
+fn half_red_wmf() -> Vec<u8> {
+    fn rec(func: u16, params: &[i16]) -> Vec<u8> {
+        let mut v = ((3 + params.len()) as u32).to_le_bytes().to_vec();
+        v.extend(func.to_le_bytes());
+        for p in params {
+            v.extend(p.to_le_bytes());
+        }
+        v
+    }
+    // CREATEBRUSHINDIRECT (solid, COLORREF 0x000000FF = red), SELECTOBJECT 0, RECTANGLE (bottom,
+    // right, top, left).
+    let body = [rec(0x02FC, &[0, 0xFF, 0, 0]), rec(0x012D, &[0]), rec(0x041B, &[1440, 1440, 0, 0]), rec(0, &[])].concat();
+    let mut f = 0x9AC6_CDD7u32.to_le_bytes().to_vec();
+    f.extend(0u16.to_le_bytes());
+    for v in [0i16, 0, 2880, 1440] {
+        f.extend(v.to_le_bytes());
+    }
+    f.extend(1440u16.to_le_bytes());
+    f.extend(0u32.to_le_bytes());
+    f.extend(0u16.to_le_bytes());
+    let total = (f.len() + 18 + body.len()) / 2;
+    for v in [1u16, 9, 0x300] {
+        f.extend(v.to_le_bytes());
+    }
+    f.extend((total as u32).to_le_bytes());
+    f.extend(16u16.to_le_bytes());
+    f.extend(0u32.to_le_bytes());
+    f.extend(0u16.to_le_bytes());
+    f.extend(body);
+    f
+}
+
+#[test]
+fn metafile_pictures_draw_their_vectors() {
+    let mut p = Presentation::default();
+    let media = p.add_media("image1.wmf", "image/x-wmf", half_red_wmf());
+    let fill = deckcraft_model::style::PictureFill { media, ..Default::default() };
+    let sh = Shape { id: ShapeId(600), xfrm: Some(Xfrm::new(100.0, 100.0, 400.0, 200.0)), kind: ShapeKind::Picture { fill }, ..Default::default() };
+    std::sync::Arc::make_mut(&mut p.slides[0]).shapes = vec![sh];
+    for scale in [0.5, 1.0, 3.0] {
+        let img = render_slide(&p, 0, &RenderOpts { scale, ..Default::default() });
+        let at = |x: f64, y: f64| img.pixel((x * scale) as u32, (y * scale) as u32);
+        let left = at(200.0, 200.0);
+        assert!(left[0] > 200 && left[1] < 60 && left[2] < 60, "left half red at {scale}: {left:?}");
+        let right = at(400.0, 200.0);
+        assert!(right[0] > 200 && right[1] > 200 && right[2] > 200, "right half empty at {scale}: {right:?}");
+    }
+}
+
+#[test]
+fn broken_metafiles_draw_nothing_and_never_panic() {
+    let wmf = half_red_wmf();
+    let mut cases: Vec<Vec<u8>> = (0..wmf.len()).step_by(3).map(|n| wmf[..n].to_vec()).collect();
+    cases.push(vec![1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]);
+    let mut huge = wmf.clone();
+    huge[10] = 0xFF;
+    huge[11] = 0x7F;
+    cases.push(huge);
+    for bytes in cases {
+        let mut p = Presentation::default();
+        let media = p.add_media("image1.emf", "image/x-emf", bytes);
+        let fill = deckcraft_model::style::PictureFill { media, ..Default::default() };
+        let sh = Shape { id: ShapeId(600), xfrm: Some(Xfrm::new(0.0, 0.0, 400.0, 200.0)), kind: ShapeKind::Picture { fill }, ..Default::default() };
+        std::sync::Arc::make_mut(&mut p.slides[0]).shapes = vec![sh];
+        let _ = render_slide(&p, 0, &RenderOpts { scale: 0.25, ..Default::default() });
+    }
+}
+
+#[test]
+fn an_object_deckcraft_doesnt_model_shows_its_preview_picture() {
+    // An embedded OLE object (or an unknown graphic) draws its preview stretched over its frame,
+    // as PowerPoint does; with no preview it draws nothing.
+    let png = {
+        let mut out = std::io::Cursor::new(vec![]);
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 2, image::Rgb([200, 20, 20])))
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    };
+    for with_preview in [true, false] {
+        let mut p = Presentation::default();
+        let media = p.add_media("image1.png", "image/png", png.clone());
+        let sh = Shape {
+            id: ShapeId(600),
+            xfrm: Some(Xfrm::new(100.0, 100.0, 400.0, 200.0)),
+            kind: ShapeKind::Opaque { xml: String::new(), preview: with_preview.then_some(media), label: "Package".into() },
+            ..Default::default()
+        };
+        std::sync::Arc::make_mut(&mut p.slides[0]).shapes = vec![sh];
+        let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+        for (x, y) in [(110, 110), (300, 200), (490, 290)] {
+            let px = img.pixel(x, y);
+            let red = px[0] > 180 && px[1] < 60 && px[2] < 60;
+            assert_eq!(red, with_preview, "({x}, {y}) {px:?}");
+        }
+        assert!(img.pixel(520, 200)[1] > 200, "nothing outside the frame");
+    }
+}
+
+/// #270: a filled shape half off the slide's left edge, and one wholly below it.
+fn off_slide_deck() -> Presentation {
+    let half = Shape {
+        id: ShapeId(2700),
+        xfrm: Some(Xfrm::new(-100.0, 100.0, 200.0, 100.0)),
+        style: Some(ShapeStyle::accent(deckcraft_color::SchemeSlot::Accent1)),
+        ..Default::default()
+    };
+    let below = Shape {
+        id: ShapeId(2701),
+        xfrm: Some(Xfrm::new(400.0, 600.0, 100.0, 60.0)),
+        style: Some(ShapeStyle::accent(deckcraft_color::SchemeSlot::Accent2)),
+        ..Default::default()
+    };
+    deck_with(vec![half, below])
+}
+
+fn near(px: [u8; 4], c: deckcraft_color::Rgba) -> bool {
+    (px[0] as i32 - c.r as i32).abs() <= 3 && (px[1] as i32 - c.g as i32).abs() <= 3 && (px[2] as i32 - c.b as i32).abs() <= 3 && px[3] == 255
+}
+
+#[test]
+fn shows_exports_and_thumbnails_clip_to_the_slide() {
+    let p = off_slide_deck();
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    assert_eq!((img.width, img.height), (960, 540));
+    let a1 = p.masters[0].theme.colors.get(deckcraft_color::SchemeSlot::Accent1);
+    // The on-slide half is there, nothing else is drawn outside the slide.
+    assert!(near(img.pixel(50, 150), a1), "{:?}", img.pixel(50, 150));
+    assert_eq!(img.pixel(150, 150), [255, 255, 255, 255]);
+}
+
+#[test]
+fn the_editor_pasteboard_draws_shapes_off_the_slide() {
+    let p = off_slide_deck();
+    let extent = slide_extent(&p, 0);
+    let region = pasteboard_region((960, 540), 1.0, extent, Region { x: -300, y: -200, w: 1560, h: 1000 });
+    assert!(region.x <= -100 && region.y == 0 && region.y as i64 + region.h as i64 >= 660, "{region:?}");
+    let opts = RenderOpts { scale: 1.0, edit: true, offset: region.offset(), size: Some(region.size()), ..Default::default() };
+    let (img, drawn) = render_slide_drawn(&p, 0, &opts);
+    assert_eq!((img.width, img.height), region.size());
+    let at = |x: i32, y: i32| img.pixel((x - region.x) as u32, (y - region.y) as u32);
+    let a1 = p.masters[0].theme.colors.get(deckcraft_color::SchemeSlot::Accent1);
+    let a2 = p.masters[0].theme.colors.get(deckcraft_color::SchemeSlot::Accent2);
+    // Both halves of the straddling shape, at full strength, and the shape below the slide.
+    assert!(near(at(-50, 150), a1), "{:?}", at(-50, 150));
+    assert!(near(at(50, 150), a1), "{:?}", at(50, 150));
+    assert!(near(at(450, 630), a2), "{:?}", at(450, 630));
+    // The pasteboard itself stays clear (the UI's own colour shows through); the slide is white.
+    assert_eq!(at(-50, 50), [0, 0, 0, 0]);
+    assert_eq!(at(200, 300), [255, 255, 255, 255]);
+    // The drawing's reach, in slide space.
+    assert!(drawn.x0 <= -100.0 && drawn.y1 >= 660.0 && drawn.x1 >= 960.0, "{drawn:?}");
+}
+
+#[test]
+fn master_graphics_off_the_slide_show_on_the_pasteboard() {
+    let mut p = Presentation::default();
+    let m = std::sync::Arc::make_mut(&mut p.masters[0]);
+    m.shapes.push(Shape {
+        id: ShapeId(2702),
+        xfrm: Some(Xfrm::new(-150.0, 300.0, 100.0, 60.0)),
+        style: Some(ShapeStyle::accent(deckcraft_color::SchemeSlot::Accent3)),
+        ..Default::default()
+    });
+    let region = pasteboard_region((960, 540), 1.0, slide_extent(&p, 0), Region { x: -300, y: -100, w: 1500, h: 800 });
+    let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, edit: true, offset: region.offset(), size: Some(region.size()), ..Default::default() });
+    let a3 = p.masters[0].theme.colors.get(deckcraft_color::SchemeSlot::Accent3);
+    assert!(near(img.pixel((-100 - region.x) as u32, (330 - region.y) as u32), a3));
+}
+
+#[test]
+fn text_spilling_out_of_its_box_below_the_slide_is_reported() {
+    let mut sh = Shape { id: ShapeId(2703), xfrm: Some(Xfrm::new(100.0, 500.0, 400.0, 20.0)), ..Default::default() };
+    let mut t = TextBody::from_text("one\ntwo\nthree\nfour\nfive");
+    for para in &mut t.paragraphs {
+        for r in &mut para.runs {
+            r.props.size = Some(40.0);
+        }
+    }
+    sh.text = Some(t);
+    let p = deck_with(vec![sh]);
+    // The box estimate doesn't see the text below the slide; the render does.
+    assert!(slide_extent(&p, 0).y1 <= 540.0 + 4.0);
+    let (_, drawn) = render_slide_drawn(&p, 0, &RenderOpts { scale: 0.5, ..Default::default() });
+    assert!(drawn.y1 > 600.0, "{drawn:?}");
+    // A slide with nothing off it reaches just the slide.
+    let (_, drawn) = render_slide_drawn(&Presentation::default(), 0, &RenderOpts { scale: 0.5, edit: true, ..Default::default() });
+    assert_eq!(drawn, Rect::new(0.0, 0.0, 960.0, 540.0));
 }

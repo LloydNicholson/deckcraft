@@ -1,6 +1,8 @@
 # UI parity with PowerPoint
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (created; ribbon, menus, panes, dialogs and interaction compared with PowerPoint 16.113 observations in `plan/powerpoint/`) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (off-slide objects in Normal view, #270) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
+
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (text editing keys observed in PowerPoint for Windows, #268) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
 
 How DeckCraft looks and feels next to PowerPoint: the shell, the ribbon, menus, panes, dialogs,
 direct manipulation, keyboard and precision. Observations of PowerPoint are kept locally in
@@ -29,7 +31,7 @@ AGENTS.md §2). Dimension score: **~60% ready** (estimated), **30–50 h** to pa
 |---|---|---|
 | Format Shape / Picture / Text pane (Fill & Line, Effects, Size & Properties, Picture, Text Box) | full | partial: fill, gradient editor, line, some effects, size; no 3-D, thin picture/texture options |
 | Format Background pane | yes | yes |
-| Selection Pane | yes | yes |
+| Selection Pane | front-most first, groups fold, drag to restack, Bring Forward / Send Backward arrows, Show All / Hide All, eye, padlock (Lock), rename in place | same: drag restacks among siblings (a child stays in its group), Ctrl+click toggles, Shift+click selects a run, arrows / Home / End / F2 / Esc in the list, right-click menu |
 | Animation Pane | list + advanced timeline | list, reorder, timing; no timeline |
 | Comments pane (threads) | yes | yes |
 | Design Ideas (Designer) | yes (cloud) | no |
@@ -41,6 +43,7 @@ AGENTS.md §2). Dimension score: **~60% ready** (estimated), **30–50 h** to pa
 |---|---|---|
 | Selection handles, rotation handle, yellow adjustment handles | yes | yes |
 | Marquee, Shift/Cmd multi-select, Tab to cycle | yes | yes |
+| Objects off the slide: drawn on the area around it in Normal view (full strength, master graphics too), selectable and movable there; clipped in the show, exports and thumbnails | yes | yes (#270) |
 | Smart guides (edges, centres, equal spacing) | yes | yes |
 | Snap to grid, grid options, drawing guides | yes | gridlines, guides and snap to grid (engine setting); no Grid Options dialog or menu toggle |
 | Nudge (arrows), fine nudge (Option+arrows) | yes | yes |
@@ -62,6 +65,35 @@ Every common PowerPoint for Mac shortcut is bound (checklist row done): new slid
 group/ungroup, bold/italic/underline, alignment, font size, list levels, Format Painter, show from
 start/current, view switching. Not yet: Cmd+F Find opening a find bar on the slide, Option+drag
 precision without snapping, F6 pane cycling, ribbon KeyTips (Windows).
+
+### Text editing keys
+
+Observed black-box in PowerPoint for Windows (Microsoft 365, October 2026) on synthetic text, and
+pinned by tests in `crates/model/src/words.rs`, `crates/model/src/edit.rs` and
+`crates/engine/src/tests_keys.rs` (#268). Windows and Linux use Ctrl; the Mac uses Option for words
+and Cmd for line and text ends (`Session::mac_keys`).
+
+| Keys | Behaviour |
+|---|---|
+| Ctrl+Left / Right | Previous / next word stop. A stop is the start of every word, punctuation run, symbol run, tab, line break and CJK character, plus the paragraph's end; spaces belong to the word before them. `it's`, `baz-qux`, `a-`, `3.14`, `1,000`, `3:45` are one word; `e.g.`, `a_b`, `x@y.com`, `dogs'` are not. Every CJK ideograph, kana and Hangul syllable is a word. Combining marks and emoji sequences never split. With a selection: Right goes on from its end, Left from its start |
+| Ctrl+Shift+Left / Right | Moves the selection's moving end by the same stops |
+| Ctrl+Up / Down | Start of the paragraph (then of the previous one) / start of the next paragraph (end of the text in the last one); Shift extends |
+| Ctrl+Backspace | Deletes back to the previous stop (word plus its trailing spaces); at a paragraph's start joins it to the previous paragraph |
+| Ctrl+Delete | Inside a word: the rest of it. On spaces after a word: the spaces and the next word. At a word's start: the word and its spaces. Then smart spacing: spaces left before closing punctuation (`ab cd, ef` → `ab, ef`) or at the paragraph's end after a word go; sentence punctuation left touching a word gets a space (`cd...ef gh` → `cd... gh`). At a paragraph's end joins the next paragraph |
+| Ctrl+Backspace / Delete with a selection | Leave the selection and delete the word part before / after its start |
+| Right-to-left paragraph | Left and Right (with or without Ctrl) swap: Left goes forward in the text. Arabic or Hebrew words in a left-to-right paragraph move in logical order |
+| Home / End | Start / end of the visual line. End on a wrapped line goes past its trailing space and the caret stays drawn at that line's end; End again stays; Home from there returns to the same line's start |
+| Ctrl+Home / End | Start / end of the text; Shift extends |
+| Ctrl+Shift+> / <, Ctrl+] / [ | Next / previous size in the font size list (18 → 20 → 24) |
+| Ctrl+B / I / U, Ctrl+Space | With a caret strictly inside a word, the whole word (without trailing spaces); at a word's edge, only what is typed next |
+| Ctrl+E / L / R / J | Center / left / right / justify the paragraphs in the selection |
+| Shift+F3 | Cycles lowercase → Capitalize Each Word → UPPERCASE → lowercase; other mixes go to UPPERCASE first. A caret in a word changes that word and moves to its start |
+| Shift+Enter | Line break |
+| Double-click / triple-click | The word without its trailing spaces (a CJK character on its own) / the paragraph including its paragraph mark |
+
+Quirks kept on purpose because PowerPoint has them: Ctrl+Left (not Ctrl+Right) also stops at
+each no-break or ideographic space, and treats an emoji followed by punctuation as one word. Tab, Shift+Tab and
+Alt+Shift+arrows in text are handled elsewhere (#78, #93).
 
 ## Visual fidelity
 
@@ -87,4 +119,9 @@ imitate Microsoft's. No pixel comparison against PowerPoint screenshots has been
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Off-slide objects drawn and editable around the slide in Normal view (#270) |
+
+| 2026-10-12 | minor | Selection Pane matched to PowerPoint (#133): drag and drop, arrows, groups, eye, Lock |
+
+| 2026-10-12 | minor | Text editing keys: Ctrl+arrows, Ctrl+Backspace/Delete, Ctrl+Up/Down, Home/End on wrapped lines, Shift+F3, font size keys, as observed in PowerPoint for Windows (#268) |
 | 2026-10-10 | major | Created: shell, panes and dialogs, direct manipulation, shortcuts and visual fidelity against PowerPoint 16.113 |

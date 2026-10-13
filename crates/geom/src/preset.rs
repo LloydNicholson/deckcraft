@@ -9,6 +9,8 @@
 use kurbo::{Arc, BezPath, Point, Rect, Shape as _, Vec2};
 use serde::{Deserialize, Serialize};
 
+mod extra;
+
 /// How a sub-path is filled. `Lighten`/`Darken` variants shade the shape's fill (3-D looking faces).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,6 +150,7 @@ pub static CATALOG: &[PresetInfo] = &[
     p!("bentConnector3", "Connector: Elbow", Lines, [50000]),
     p!("curvedConnector3", "Connector: Curved", Lines, [50000]),
     p!("bentConnector2", "Connector: Elbow (one bend)", Lines, []),
+    p!("lineInv", "Line: Rising", Lines, []),
     p!("rect", "Rectangle", Rectangles, []),
     p!("roundRect", "Rectangle: Rounded Corners", Rectangles, [16667]),
     p!("snip1Rect", "Rectangle: Single Corner Snipped", Rectangles, [16667]),
@@ -163,6 +166,7 @@ pub static CATALOG: &[PresetInfo] = &[
     p!("rtTriangle", "Right Triangle", BasicShapes, []),
     p!("parallelogram", "Parallelogram", BasicShapes, [25000]),
     p!("trapezoid", "Trapezoid", BasicShapes, [25000]),
+    p!("nonIsoscelesTrapezoid", "Trapezoid: Uneven Sides", BasicShapes, [25000, 25000]),
     p!("diamond", "Diamond", BasicShapes, []),
     p!("pentagon", "Regular Pentagon", BasicShapes, []),
     p!("hexagon", "Hexagon", BasicShapes, [25000]),
@@ -171,9 +175,13 @@ pub static CATALOG: &[PresetInfo] = &[
     p!("decagon", "Decagon", BasicShapes, []),
     p!("dodecagon", "Dodecagon", BasicShapes, []),
     p!("pie", "Partial Circle", BasicShapes, [0, 16200000]),
+    p!("pieWedge", "Quarter Wedge", BasicShapes, []),
     p!("chord", "Chord", BasicShapes, [2700000, 16200000]),
     p!("teardrop", "Teardrop", BasicShapes, [100000]),
     p!("frame", "Frame", BasicShapes, [12500]),
+    p!("cornerTabs", "Corner Tabs: Triangles", BasicShapes, []),
+    p!("squareTabs", "Corner Tabs: Squares", BasicShapes, []),
+    p!("plaqueTabs", "Corner Tabs: Quarter Circles", BasicShapes, []),
     p!("halfFrame", "Half Frame", BasicShapes, [33333, 33333]),
     p!("corner", "L-Shape", BasicShapes, [50000, 50000]),
     p!("diagStripe", "Diagonal Stripe", BasicShapes, [50000]),
@@ -192,6 +200,9 @@ pub static CATALOG: &[PresetInfo] = &[
     p!("sun", "Sun", BasicShapes, [25000]),
     p!("moon", "Moon", BasicShapes, [50000]),
     p!("cloud", "Cloud", BasicShapes, []),
+    p!("gear6", "Gear: 6 Teeth", BasicShapes, [15000, 3526]),
+    p!("gear9", "Gear: 9 Teeth", BasicShapes, [10000, 1763]),
+    p!("funnel", "Funnel", BasicShapes, []),
     p!("arc", "Arc", BasicShapes, [16200000, 0]),
     p!("bracketPair", "Double Bracket", BasicShapes, [16667]),
     p!("bracePair", "Double Brace", BasicShapes, [8333]),
@@ -199,6 +210,9 @@ pub static CATALOG: &[PresetInfo] = &[
     p!("rightBracket", "Right Bracket", BasicShapes, [8333]),
     p!("leftBrace", "Left Brace", BasicShapes, [8333, 50000]),
     p!("rightBrace", "Right Brace", BasicShapes, [8333, 50000]),
+    p!("chartX", "Chart Marker: Cross Lines", BasicShapes, []),
+    p!("chartStar", "Chart Marker: Star Lines", BasicShapes, []),
+    p!("chartPlus", "Chart Marker: Plus Lines", BasicShapes, []),
     p!("rightArrow", "Arrow: Right", BlockArrows, [50000, 50000]),
     p!("leftArrow", "Arrow: Left", BlockArrows, [50000, 50000]),
     p!("upArrow", "Arrow: Up", BlockArrows, [50000, 50000]),
@@ -209,16 +223,27 @@ pub static CATALOG: &[PresetInfo] = &[
     p!("leftRightUpArrow", "Arrow: Left-Right-Up", BlockArrows, [25000, 25000, 25000]),
     p!("bentArrow", "Arrow: Bent", BlockArrows, [25000, 25000, 25000, 43750]),
     p!("uturnArrow", "Arrow: U-Turn", BlockArrows, [25000, 25000, 25000, 43750, 75000]),
+    p!("curvedRightArrow", "Arrow: Curved Right", BlockArrows, [25000, 50000, 25000]),
+    p!("curvedLeftArrow", "Arrow: Curved Left", BlockArrows, [25000, 50000, 25000]),
+    p!("curvedUpArrow", "Arrow: Curved Up", BlockArrows, [25000, 50000, 25000]),
+    p!("curvedDownArrow", "Arrow: Curved Down", BlockArrows, [25000, 50000, 25000]),
     p!("leftUpArrow", "Arrow: Left-Up", BlockArrows, [25000, 25000, 25000]),
     p!("bentUpArrow", "Arrow: Bent-Up", BlockArrows, [25000, 25000, 25000]),
     p!("stripedRightArrow", "Arrow: Striped Right", BlockArrows, [50000, 50000]),
     p!("notchedRightArrow", "Arrow: Notched Right", BlockArrows, [50000, 50000]),
     p!("homePlate", "Arrow: Pentagon", BlockArrows, [50000]),
     p!("chevron", "Arrow: Chevron", BlockArrows, [50000]),
+    p!("circularArrow", "Arrow: Circular", BlockArrows, [12500, 1142319, 20457681, 10800000, 12500]),
+    p!("leftCircularArrow", "Arrow: Circular Counter-clockwise", BlockArrows, [12500, -1142319, 1142319, 10800000, 12500]),
+    p!("leftRightCircularArrow", "Arrow: Circular Two-headed", BlockArrows, [12500, 1142319, 20457681, 11942319, 12500]),
+    p!("swooshArrow", "Arrow: Swoosh", BlockArrows, [25000, 16667]),
     p!("rightArrowCallout", "Callout: Right Arrow", BlockArrows, [25000, 25000, 25000, 64977]),
     p!("downArrowCallout", "Callout: Down Arrow", BlockArrows, [25000, 25000, 25000, 64977]),
     p!("leftArrowCallout", "Callout: Left Arrow", BlockArrows, [25000, 25000, 25000, 64977]),
     p!("upArrowCallout", "Callout: Up Arrow", BlockArrows, [25000, 25000, 25000, 64977]),
+    p!("leftRightArrowCallout", "Callout: Left-Right Arrow", BlockArrows, [25000, 25000, 25000, 48123]),
+    p!("upDownArrowCallout", "Callout: Up-Down Arrow", BlockArrows, [25000, 25000, 25000, 48123]),
+    p!("quadArrowCallout", "Callout: Quad Arrow", BlockArrows, [18515, 18515, 18515, 48123]),
     p!("mathPlus", "Plus Sign", EquationShapes, [23520]),
     p!("mathMinus", "Minus Sign", EquationShapes, [23520]),
     p!("mathMultiply", "Multiplication Sign", EquationShapes, [23520]),
@@ -253,6 +278,7 @@ pub static CATALOG: &[PresetInfo] = &[
     p!("flowChartMagneticDisk", "Flowchart: Magnetic Disk", Flowchart, []),
     p!("flowChartMagneticDrum", "Flowchart: Direct Access Storage", Flowchart, []),
     p!("flowChartDisplay", "Flowchart: Display", Flowchart, []),
+    p!("flowChartOfflineStorage", "Flowchart: Offline Storage", Flowchart, []),
     p!("irregularSeal1", "Explosion: 8 Points", StarsAndBanners, []),
     p!("irregularSeal2", "Explosion: 14 Points", StarsAndBanners, []),
     p!("star4", "Star: 4 Points", StarsAndBanners, [12500]),
@@ -267,6 +293,9 @@ pub static CATALOG: &[PresetInfo] = &[
     p!("star32", "Star: 32 Points", StarsAndBanners, [37500]),
     p!("ribbon2", "Ribbon: Tilted Up", StarsAndBanners, [16667, 50000]),
     p!("ribbon", "Ribbon: Tilted Down", StarsAndBanners, [16667, 50000]),
+    p!("ellipseRibbon2", "Ribbon: Curved and Tilted Up", StarsAndBanners, [25000, 50000, 12500]),
+    p!("ellipseRibbon", "Ribbon: Curved and Tilted Down", StarsAndBanners, [25000, 50000, 12500]),
+    p!("leftRightRibbon", "Ribbon: Left-Right Fold", StarsAndBanners, [50000, 50000, 16667]),
     p!("verticalScroll", "Scroll: Vertical", StarsAndBanners, [12500]),
     p!("horizontalScroll", "Scroll: Horizontal", StarsAndBanners, [12500]),
     p!("wave", "Wave", StarsAndBanners, [12500, 0]),
@@ -276,6 +305,22 @@ pub static CATALOG: &[PresetInfo] = &[
     p!("wedgeEllipseCallout", "Speech Bubble: Oval", Callouts, [-20833, 62500]),
     p!("cloudCallout", "Thought Bubble: Cloud", Callouts, [-20833, 62500]),
     p!("borderCallout1", "Callout: Line", Callouts, [18750, -8333, 112500, -38333]),
+    p!("borderCallout2", "Callout: Bent Line", Callouts, [18750, -8333, 18750, -16667, 112500, -46667]),
+    p!("borderCallout3", "Callout: Double Bent Line", Callouts, [18750, -8333, 18750, -16667, 100000, -16667, 112963, -8333]),
+    p!("accentCallout1", "Callout: Line with Accent Bar", Callouts, [18750, -8333, 112500, -38333]),
+    p!("accentCallout2", "Callout: Bent Line with Accent Bar", Callouts, [18750, -8333, 18750, -16667, 112500, -46667]),
+    p!("accentCallout3", "Callout: Double Bent Line with Accent Bar", Callouts, [18750, -8333, 18750, -16667, 100000, -16667, 112963, -8333]),
+    p!("callout1", "Callout: Line with No Border", Callouts, [18750, -8333, 112500, -38333]),
+    p!("callout2", "Callout: Bent Line with No Border", Callouts, [18750, -8333, 18750, -16667, 112500, -46667]),
+    p!("callout3", "Callout: Double Bent Line with No Border", Callouts, [18750, -8333, 18750, -16667, 100000, -16667, 112963, -8333]),
+    p!("accentBorderCallout1", "Callout: Line with Border and Accent Bar", Callouts, [18750, -8333, 112500, -38333]),
+    p!("accentBorderCallout2", "Callout: Bent Line with Border and Accent Bar", Callouts, [18750, -8333, 18750, -16667, 112500, -46667]),
+    p!(
+        "accentBorderCallout3",
+        "Callout: Double Bent Line with Border and Accent Bar",
+        Callouts,
+        [18750, -8333, 18750, -16667, 100000, -16667, 112963, -8333]
+    ),
     p!("actionButtonBackPrevious", "Action Button: Go Back or Previous", ActionButtons, []),
     p!("actionButtonForwardNext", "Action Button: Go Forward or Next", ActionButtons, []),
     p!("actionButtonBeginning", "Action Button: Go to Beginning", ActionButtons, []),
@@ -1535,7 +1580,7 @@ pub fn build(name: &str, w: f64, h: f64, adj: &[f64]) -> Option<Geometry> {
             let l = Pb::new().m(0.0, 0.0).c(x / 2.0, 0.0, x, h / 4.0, x, h / 2.0).c(x, h * 0.75, (x + w) / 2.0, h, w, h).take();
             Geometry { paths: vec![stroke_only(l)], text_rect: full, handles: vec![], sites: vec![Point::ZERO, Point::new(w, h)] }
         }
-        _ => return None,
+        _ => return extra::build(name, w, h, &a),
     };
     Some(g)
 }

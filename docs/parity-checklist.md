@@ -9,7 +9,7 @@ The summary between `<!-- SUMMARY -->
 |---|---|---|---|---|---|
 | P0 | 72 | 60 | 12 | 0 | 92% |
 | P1 | 65 | 38 | 21 | 6 | 75% |
-| P2 | 54 | 13 | 13 | 28 | 36% |
+| P2 | 54 | 13 | 14 | 27 | 37% |
 
 | Area | Parity |
 |---|---|
@@ -18,7 +18,7 @@ The summary between `<!-- SUMMARY -->
 | Slides | 90% |
 | Views | 90% |
 | Masters & themes | 85% |
-| Shapes | 86% |
+| Shapes | 88% |
 | Format | 81% |
 | Arrange | 100% |
 | Text | 80% |
@@ -115,7 +115,7 @@ Open P0 items: Start screen (new, templates/themes, recent), Contextual tabs (Sh
 | Shapes | Change shape | P1 | D |
 | Shapes | Text boxes | P0 | D |
 | Shapes | WordArt | P1 | P |
-| Shapes | Text warp transforms | P2 | M |
+| Shapes | Text warp transforms | P2 | P |
 | Shapes | Shape quick styles | P1 | D |
 | Shapes | Set as default shape | P2 | D |
 | Format | Solid fill and transparency | P0 | D |

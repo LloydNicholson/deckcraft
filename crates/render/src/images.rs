@@ -79,13 +79,39 @@ fn adjust_key(a: &PictureAdjust) -> u64 {
     if let Some(c) = a.clear_color {
         mix(((c.r as u64) << 16) | ((c.g as u64) << 8) | c.b as u64 | 1 << 40);
     }
+    if let Some((d, l)) = duotone_rgb(a) {
+        for c in [d, l] {
+            mix(((c.r as u64) << 24) | ((c.g as u64) << 16) | ((c.b as u64) << 8) | c.a as u64 | 1 << 41);
+        }
+    }
     h
 }
 
-/// Decode encoded bytes (PNG, JPEG, GIF, WebP, BMP, TIFF) to straight RGBA.
+/// The duotone's dark and light colours. The painter resolves them to plain RGB first (see
+/// `paint::resolved`); a colour that is still a scheme reference falls back to black and white.
+fn duotone_rgb(a: &PictureAdjust) -> Option<(deckcraft_color::Rgba, deckcraft_color::Rgba)> {
+    use deckcraft_model::style::ColorBase;
+    let (d, l) = a.duotone.as_ref()?;
+    let rgb = |c: &deckcraft_model::style::ColorRef, or: deckcraft_color::Rgba| match &c.base {
+        ColorBase::Rgb { rgb } if c.mods.is_empty() => *rgb,
+        _ => or,
+    };
+    Some((rgb(d, deckcraft_color::Rgba::BLACK), rgb(l, deckcraft_color::Rgba::WHITE)))
+}
+
+/// Decode encoded bytes (PNG, JPEG, GIF, WebP, BMP, TIFF; WMF and EMF drawn at
+/// [`crate::metafile::DEFAULT_SIDE`]) to straight RGBA.
 pub fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
+    decode_at(bytes, crate::metafile::DEFAULT_SIDE)
+}
+
+/// [`decode`], with a metafile drawn with its longer side `side` px.
+fn decode_at(bytes: &[u8], side: u32) -> Option<image::RgbaImage> {
     if bytes.len() > 512 << 20 {
         return None;
+    }
+    if crate::metafile::is_metafile(bytes) {
+        return crate::metafile::rasterize(bytes, side);
     }
     let img = image::load_from_memory(bytes).ok()?;
     let (w, h) = (img.width(), img.height());
@@ -114,13 +140,13 @@ pub fn decode_for(bytes: &Arc<Vec<u8>>, want: f64, adj: &PictureAdjust) -> Optio
     }) {
         return Some(pm);
     }
-    let Some(mut img) = decode(bytes) else {
+    let target = 1u32 << bucket;
+    let Some(mut img) = decode_at(bytes, target) else {
         with(|c| {
             c.bad.insert(addr, bytes.clone());
         });
         return None;
     };
-    let target = 1u32 << bucket;
     let (w, h) = img.dimensions();
     if w.max(h) > target.max(16) && w.max(h) > 4096.min(target * 2) {
         let k = target as f64 / w.max(h) as f64;
@@ -233,6 +259,7 @@ fn apply_adjust(img: &mut image::RgbaImage, a: &PictureAdjust) {
     if a.brightness == 0.0 && a.contrast == 0.0 && sat == 1.0 && !a.grayscale && a.clear_color.is_none() && a.duotone.is_none() {
         return;
     }
+    let duo = duotone_rgb(a);
     let b = a.brightness.clamp(-1.0, 1.0) * 255.0;
     let c = a.contrast.clamp(-1.0, 1.0);
     let cf = if c >= 0.0 { 1.0 / (1.0 - c * 0.99) } else { 1.0 + c };
@@ -252,6 +279,12 @@ fn apply_adjust(img: &mut image::RgbaImage, a: &PictureAdjust) {
             *v = y + (*v - y) * s;
             *v = (*v - 128.0) * cf + 128.0 + b;
         }
+        // Duotone: the pixel's luminance picks a colour between the dark and the light one.
+        if let Some((d, l)) = duo {
+            let t = ((0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255.0).clamp(0.0, 1.0);
+            rgb =
+                [d.r as f64 + (l.r as f64 - d.r as f64) * t, d.g as f64 + (l.g as f64 - d.g as f64) * t, d.b as f64 + (l.b as f64 - d.b as f64) * t];
+        }
         for (i, v) in rgb.iter().enumerate() {
             if let Some(ch) = p.0.get_mut(i) {
                 *ch = v.round().clamp(0.0, 255.0) as u8;
@@ -265,6 +298,25 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn duotone_maps_luminance_between_its_two_colours() {
+        use deckcraft_color::Rgba;
+        use deckcraft_model::style::ColorRef;
+        let mut img = image::RgbaImage::from_fn(3, 1, |x, _| image::Rgba([[0, 0, 0, 255], [128, 128, 128, 200], [255, 255, 255, 255]][x as usize]));
+        let adj =
+            PictureAdjust { duotone: Some((ColorRef::rgb(Rgba::rgb(100, 40, 0)), ColorRef::rgb(Rgba::rgb(250, 240, 200)))), ..Default::default() };
+        apply_adjust(&mut img, &adj);
+        assert_eq!(img.get_pixel(0, 0).0, [100, 40, 0, 255], "black takes the dark colour");
+        assert_eq!(img.get_pixel(2, 0).0, [250, 240, 200, 255], "white takes the light colour");
+        let mid = img.get_pixel(1, 0).0;
+        assert!((mid[0] as i32 - 175).abs() <= 1 && (mid[1] as i32 - 140).abs() <= 1 && (mid[2] as i32 - 100).abs() <= 1, "{mid:?}");
+        assert_eq!(mid[3], 200, "alpha is kept");
+        // Different duotones are cached separately.
+        let other = PictureAdjust { duotone: Some((ColorRef::rgb(Rgba::rgb(0, 0, 0)), ColorRef::rgb(Rgba::rgb(255, 0, 0)))), ..Default::default() };
+        assert_ne!(adjust_key(&adj), adjust_key(&other));
+        assert_ne!(adjust_key(&adj), adjust_key(&PictureAdjust::default()));
+    }
 
     #[test]
     fn a_gif_of_many_tiny_frames_keeps_only_the_frame_cap() {

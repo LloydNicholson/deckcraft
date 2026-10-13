@@ -147,6 +147,23 @@ pub fn handle(app: &mut SlideApp, ctx: &egui::Context, req: &ControlRequest) -> 
             let Some(t) = s("text") else { return err("missing `text`") };
             wrap(app.session.type_text(t).map_err(|e| e.to_string()))
         }
+        "ui.ime" => {
+            // An input method's event, through egui like a real one: it reaches the slide's text
+            // or a focused text field (#101).
+            let ev = if let Some(t) = s("commit") {
+                egui::ImeEvent::Commit(t.into())
+            } else if let Some(t) = s("preedit") {
+                let active = p.get("active").and_then(Value::as_array).and_then(|a| {
+                    let (x, y) = (a.first()?.as_u64()? as usize, a.get(1)?.as_u64()? as usize);
+                    (x <= y).then_some(x..y)
+                });
+                egui::ImeEvent::Preedit { text: t.into(), active_range_chars: active }
+            } else {
+                return err("missing `preedit` or `commit`");
+            };
+            app.synthetic.push(egui::Event::Ime(ev));
+            ok(json!({"queued": true}))
+        }
         "ui.tool.select" => {
             let Some(name) = s("tool") else { return err("missing `tool`") };
             match tool_kind(name, s("preset")) {

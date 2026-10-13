@@ -16,12 +16,15 @@ pub mod media;
 pub mod menus;
 pub mod panes;
 pub mod ribbon;
+pub mod selpane;
 pub mod show;
 pub mod sorter;
 pub mod status;
 pub mod textures;
 pub mod theme;
 pub mod thumbs;
+pub mod toast;
+pub mod uifonts;
 pub mod widgets;
 
 use std::sync::mpsc::{Receiver, Sender};
@@ -181,6 +184,10 @@ pub struct SlideApp {
     /// Audio/video playback (editor control bar, slide show, `media.*` commands).
     pub media: media::MediaHost,
     pub status: Option<(String, f64)>,
+    /// A brief notice over the bottom of the window (missing fonts on opening a file).
+    pub toast: Option<toast::Toast>,
+    /// Documents (by uid) whose missing fonts have been mentioned.
+    fonts_noted: std::collections::HashSet<u64>,
     pub perf: Perf,
     /// Synthetic input events (control channel `ui.click` etc.), injected one per frame.
     pub synthetic: Vec<egui::Event>,
@@ -188,6 +195,8 @@ pub struct SlideApp {
     pub canvas_rect: Option<egui::Rect>,
     pub canvas_scale: f32,
     pub slide_rect: Option<egui::Rect>,
+    /// Where the canvas texture (the slide and the pasteboard drawn around it) is on screen.
+    pub canvas_region: Option<egui::Rect>,
     pub palette: Option<(String, usize)>,
     /// Integrated title bar (macOS traffic lights over our chrome).
     pub integrated_titlebar: bool,
@@ -207,8 +216,12 @@ pub struct SlideApp {
     /// Quit was confirmed (changes saved or discarded): let the window close.
     pub quit_confirmed: bool,
     pub(crate) notes_buf: (u64, usize, String),
+    /// Faces borrowed from the font database for text the interface fonts can't draw (#101).
+    pub ui_fonts: uifonts::UiFonts,
     /// Thumbnail pane drag (slide index, current drop index).
     pub(crate) thumb_drag: Option<(usize, usize)>,
+    /// Selection pane: folded groups, renaming, drag and drop.
+    pub selpane: selpane::State,
 }
 
 impl SlideApp {
@@ -224,11 +237,14 @@ impl SlideApp {
             show: None,
             media: media::MediaHost::new(audio_out),
             status: None,
+            toast: None,
+            fonts_noted: Default::default(),
             perf: Perf { frame_ms: 0.0, render_ms: 0.0, fps: 0.0 },
             synthetic: vec![],
             canvas_rect: None,
             canvas_scale: 1.0,
             slide_rect: None,
+            canvas_region: None,
             palette: None,
             integrated_titlebar: false,
             home: None,
@@ -243,7 +259,9 @@ impl SlideApp {
             last_recovery: 0.0,
             quit_confirmed: false,
             notes_buf: (0, usize::MAX, String::new()),
+            ui_fonts: uifonts::UiFonts::default(),
             thumb_drag: None,
+            selpane: selpane::State::default(),
         }
     }
 
@@ -535,7 +553,7 @@ impl SlideApp {
             ctx.set_zoom_factor(scale);
         }
         if !self.styled {
-            theme::install_fonts(ctx);
+            theme::install_fonts_with(ctx, &self.ui_fonts.faces);
             self.styled = true;
             self.restyle = true;
         } else {
@@ -557,6 +575,9 @@ impl SlideApp {
         }
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
+        }
+        if self.fonts_ready {
+            self.note_ui_text(ctx);
         }
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
@@ -586,6 +607,52 @@ impl SlideApp {
                 Ok(bytes) => self.open_or_insert_bytes(&name, &bytes),
                 Err(e) => self.set_status(e),
             }
+        }
+    }
+
+    /// Borrow faces for interface text in scripts the interface fonts lack (#101): the open
+    /// presentations' names and text, recent files, and what is typed or composed this frame.
+    fn note_ui_text(&mut self, ctx: &egui::Context) {
+        let typed: String = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Text(t) | egui::Event::Paste(t) => Some(t.as_str()),
+                    egui::Event::Ime(egui::ImeEvent::Preedit { text, .. } | egui::ImeEvent::Commit(text)) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect()
+        });
+        self.ui_fonts.note(ctx, &typed);
+        for d in self.session.documents() {
+            self.ui_fonts.note(ctx, &d.title());
+        }
+        for r in &self.ui.recent {
+            self.ui_fonts.note(ctx, r);
+        }
+        if let Some(st) = self.session.active() {
+            self.ui_fonts.note_doc(ctx, st);
+        }
+        self.ui_fonts.apply(ctx);
+    }
+
+    /// An input method's event for the slide's text (#101): the preedit is shown in the text and
+    /// replaced on each update; the commit replaces it as one undo step.
+    fn ime_event(&mut self, e: &egui::ImeEvent) {
+        let r = match e {
+            egui::ImeEvent::Preedit { text, active_range_chars } => {
+                self.session.compose_text(text, active_range_chars.as_ref().map(|r| (r.start, r.end)))
+            }
+            egui::ImeEvent::Commit(text) => self.session.commit_text(text),
+            #[allow(deprecated)]
+            egui::ImeEvent::Disabled => {
+                self.session.end_composition();
+                Ok(Value::Null)
+            }
+            _ => Ok(Value::Null),
+        };
+        if let Err(e) = r {
+            self.set_status(e.to_string());
         }
     }
 
@@ -636,6 +703,7 @@ impl SlideApp {
                         self.set_status(e.to_string());
                     }
                 }
+                egui::Event::Ime(ime) => self.ime_event(&ime),
                 egui::Event::Copy => {
                     if let Ok(v) = self.session.execute("edit.copy", &json!({}))
                         && let Some(t) = v.get("text").and_then(Value::as_str)
@@ -730,6 +798,8 @@ impl SlideApp {
                 }
             }
         });
+        toast::note_missing_fonts(self);
+        toast::show(self, &ctx);
         dialogs::show(self, &ctx);
         menus::palette(self, &ctx);
         for url in std::mem::take(&mut self.pending_urls) {
@@ -897,6 +967,9 @@ fn save_as_ext(d: &deckcraft_engine::DocState) -> &'static str {
 }
 
 #[cfg(test)]
+mod ime_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -906,6 +979,37 @@ mod tests {
         let d = app.session.active().unwrap();
         let sh = &d.doc.slides[0].shapes[0];
         sh.text.as_ref().map(|t| t.paragraphs.iter().map(|p| p.text()).collect::<Vec<_>>().join("\n")).unwrap_or_default()
+    }
+
+    #[test]
+    fn opening_a_file_with_missing_fonts_shows_a_toast_once() {
+        use egui_kittest::kittest::Queryable;
+        let mut p = deckcraft_model::Presentation::default();
+        let slide = std::sync::Arc::make_mut(&mut p.slides[0]);
+        let mut body = deckcraft_model::text::TextBody::from_text("Hello");
+        body.paragraphs[0].runs[0].props.font = Some("Qqq Nonexistent Sans".into());
+        slide.shapes[0].text = Some(body);
+        let data = deckcraft_engine::cmd::base64_encode(&deckcraft_engine::cmd::file::save_bytes(&p, "pptx").unwrap());
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        harness.run_steps(2);
+        assert!(harness.state().toast.is_none(), "a new presentation has nothing to say");
+        harness.state_mut().session.execute("file.openBytes", &json!({"name": "a.pptx", "data": data})).unwrap();
+        harness.run_steps(2);
+        let text = harness.state().toast.as_ref().map(|t| t.text.clone()).unwrap_or_default();
+        assert!(text.starts_with("Qqq Nonexistent Sans isn't installed"), "{text}");
+        assert!(harness.query_by_label_contains("Qqq Nonexistent Sans isn't installed").is_some());
+        // Closed, it stays closed for that document.
+        harness.get_by_label("Close").click();
+        harness.run_steps(2);
+        assert!(harness.state().toast.is_none());
+        harness.run_steps(2);
+        assert!(harness.state().toast.is_none());
     }
 
     /// #17: Home created a new blank presentation instead of going to the start screen.
@@ -1012,10 +1116,196 @@ mod tests {
         assert!(save_filters("Deck").is_empty());
     }
 
+    /// #268: Ctrl+Backspace, Ctrl+Delete, Ctrl+arrows and Ctrl+Shift+arrows in text, through real
+    /// egui key events (Windows keys).
+    #[test]
+    fn ctrl_word_keys_edit_text() {
+        use egui::{Key, Modifiers};
+        let mut session = Session::with_new();
+        session.mac_keys = false;
+        session.prefs.autocorrect = false;
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(session, Services::default()),
+        );
+        harness.run_steps(2);
+        let title = harness.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+        harness.state_mut().session.execute("text.edit", &json!({"id": title})).unwrap();
+        harness.event(egui::Event::Text("Hello, world.  Foo bar".into()));
+        harness.run_steps(1);
+        assert_eq!(title_text(harness.state()), "Hello, world.  Foo bar");
+        let caret = |h: &egui_kittest::Harness<'_, SlideApp>| h.state().session.active().unwrap().selection.text.clone().unwrap();
+        let ctrl = Modifiers::COMMAND;
+        let ctrl_shift = Modifiers::COMMAND | Modifiers::SHIFT;
+
+        // Ctrl+Left stops at every word and punctuation run, as in PowerPoint.
+        let mut stops = vec![];
+        for _ in 0..6 {
+            harness.key_press_modifiers(ctrl, Key::ArrowLeft);
+            harness.run_steps(1);
+            stops.push(caret(&harness).caret.1);
+        }
+        assert_eq!(stops, vec![19, 15, 12, 7, 5, 0]);
+        harness.key_press_modifiers(ctrl, Key::ArrowRight);
+        harness.run_steps(1);
+        assert_eq!(caret(&harness).caret, (0, 5));
+
+        // Ctrl+Shift+Right selects to the next stops.
+        harness.key_press_modifiers(ctrl_shift, Key::ArrowRight);
+        harness.key_press_modifiers(ctrl_shift, Key::ArrowRight);
+        harness.run_steps(1);
+        let t = caret(&harness);
+        assert_eq!((t.anchor, t.caret), ((0, 5), (0, 12)));
+
+        // Ctrl+Delete deletes the next word from the selection's start; Ctrl+Backspace the one
+        // before the caret.
+        harness.key_press_modifiers(ctrl, Key::Delete);
+        harness.run_steps(1);
+        assert_eq!(title_text(harness.state()), "Helloworld.  Foo bar");
+        harness.key_press(Key::End);
+        harness.key_press_modifiers(ctrl, Key::Backspace);
+        harness.run_steps(1);
+        assert_eq!(title_text(harness.state()), "Helloworld.  Foo ");
+
+        // Ctrl+Up/Down go by paragraph, Ctrl+Home/End to the text's ends.
+        harness.key_press(Key::Enter);
+        harness.event(egui::Event::Text("Next".into()));
+        harness.key_press_modifiers(ctrl, Key::ArrowUp);
+        harness.run_steps(1);
+        assert_eq!(caret(&harness).caret, (1, 0));
+        harness.key_press_modifiers(ctrl, Key::ArrowUp);
+        harness.run_steps(1);
+        assert_eq!(caret(&harness).caret, (0, 0));
+        harness.key_press_modifiers(ctrl, Key::ArrowDown);
+        harness.run_steps(1);
+        assert_eq!(caret(&harness).caret, (1, 0));
+        harness.key_press_modifiers(ctrl_shift, Key::Home);
+        harness.run_steps(1);
+        let t = caret(&harness);
+        assert_eq!((t.anchor, t.caret), ((1, 0), (0, 0)));
+
+        // Ctrl+Shift+> (egui reports the Period key) grows the selected text's font.
+        let size = |h: &mut egui_kittest::Harness<'_, SlideApp>| h.state_mut().session.execute("format.state", &json!({})).unwrap()["size"].as_f64();
+        let before = size(&mut harness);
+        harness.key_press_modifiers(ctrl_shift, Key::Period);
+        harness.run_steps(1);
+        let after = size(&mut harness).unwrap();
+        assert!(after > before.unwrap_or(0.0), "{before:?} → {after}");
+        harness.key_press_modifiers(ctrl, Key::OpenBracket);
+        harness.run_steps(1);
+        assert!(size(&mut harness).unwrap_or(f64::MAX) < after, "Ctrl+[ shrinks");
+    }
+
     #[test]
     fn home_needs_an_open_presentation() {
         let mut app = SlideApp::new(Session::new(), Services::default());
         app.run("app.home", json!({})).unwrap();
         assert!(!app.home_open() && app.home.is_none(), "with nothing open the start screen shows anyway");
+    }
+    fn canvas_harness() -> egui_kittest::Harness<'static, SlideApp> {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        harness.run_steps(2);
+        let app = harness.state_mut();
+        // Zoomed out, the canvas shows plenty of pasteboard around the slide.
+        app.ui.zoom = Some(0.4);
+        app.session.prefs.snap_to_grid = false;
+        app.session.prefs.smart_guides = false;
+        harness
+    }
+
+    fn selected(app: &SlideApp) -> Vec<u64> {
+        app.session.active().unwrap().selection.shapes.iter().map(|i| i.0 as u64).collect()
+    }
+
+    fn shape_x(app: &SlideApp, id: u64) -> f64 {
+        let st = app.session.active().unwrap();
+        st.shape(deckcraft_model::ShapeId(id as u32)).and_then(|s| s.xfrm).unwrap().x
+    }
+
+    /// #270: PowerPoint's Normal view draws objects off the slide on the area around it, where
+    /// they can be selected and moved.
+    #[test]
+    fn off_slide_objects_show_on_the_pasteboard_and_can_be_selected_and_moved() {
+        let mut harness = canvas_harness();
+        let off =
+            harness.state_mut().session.execute("shape.insert", &json!({"preset": "rect", "rect": [1000.0, 100.0, 120.0, 80.0]})).unwrap()["id"]
+                .as_u64()
+                .unwrap();
+        harness.state_mut().session.execute("edit.select", &json!({"ids": []})).unwrap();
+        harness.run_steps(3);
+
+        let app = harness.state();
+        let (slide, region, k) = (app.slide_rect.unwrap(), app.canvas_region.unwrap(), app.canvas_scale);
+        // The texture reaches past the slide's right edge to the shape's, and no further left/up.
+        assert!(region.max.x >= slide.min.x + 1120.0 * k - 1.0, "{region:?} {slide:?}");
+        assert!((region.min.x - slide.min.x).abs() < 1.0 && (region.min.y - slide.min.y).abs() < 1.0, "{region:?} {slide:?}");
+        let centre = slide.min + egui::vec2(1060.0 * k, 140.0 * k);
+        assert!(app.canvas_rect.unwrap().contains(centre));
+
+        // Drawn at full strength on the pasteboard (when a GPU renderer is available here).
+        if let Ok(img) = harness.render() {
+            let px = |p: egui::Pos2| img.get_pixel(p.x as u32, p.y as u32).0;
+            let shape = px(centre);
+            let board = px(slide.min + egui::vec2(1060.0 * k, 400.0 * k));
+            let doc = &harness.state().session.active().unwrap().doc;
+            let accent = doc.masters[0].theme.colors.get(deckcraft_color::SchemeSlot::Accent1);
+            let close = |a: u8, b: u8| (a as i32 - b as i32).abs() <= 4;
+            assert!(close(shape[0], accent.r) && close(shape[1], accent.g) && close(shape[2], accent.b), "{shape:?} vs {accent:?}");
+            assert_ne!(shape, board);
+        }
+
+        // Click selects it.
+        harness.hover_at(centre);
+        harness.run_steps(1);
+        harness.drag_at(centre);
+        harness.run_steps(1);
+        harness.drop_at(centre);
+        harness.run_steps(2);
+        assert_eq!(selected(harness.state()), vec![off]);
+
+        // Drag moves it, further off the slide.
+        let to = centre + egui::vec2(40.0, 0.0);
+        harness.hover_at(centre);
+        harness.run_steps(1);
+        harness.drag_at(centre);
+        harness.run_steps(1);
+        for i in 1..=4 {
+            harness.hover_at(centre + egui::vec2(10.0 * i as f32, 0.0));
+            harness.run_steps(1);
+        }
+        harness.drop_at(to);
+        harness.run_steps(2);
+        let x = shape_x(harness.state(), off);
+        assert!((x - (1000.0 + 40.0 / k as f64)).abs() < 1.5, "{x}");
+        // The pasteboard followed it.
+        let (slide, region) = (harness.state().slide_rect.unwrap(), harness.state().canvas_region.unwrap());
+        assert!(region.max.x >= slide.min.x + (x as f32 + 120.0) * k - 1.0, "{region:?}");
+
+        // Idle frames don't render the canvas again.
+        let n = harness.state().textures.canvas_renders;
+        harness.run_steps(3);
+        assert_eq!(harness.state().textures.canvas_renders, n);
+    }
+
+    /// A slide with nothing off it renders just the slide, as before.
+    #[test]
+    fn the_canvas_renders_only_the_slide_when_nothing_is_off_it() {
+        let mut harness = canvas_harness();
+        harness.run_steps(3);
+        let app = harness.state();
+        let (slide, region) = (app.slide_rect.unwrap(), app.canvas_region.unwrap());
+        assert!((region.min - slide.min).length() < 0.5 && (region.max - slide.max).length() < 1.0, "{region:?} {slide:?}");
+        let n = app.textures.canvas_renders;
+        harness.run_steps(3);
+        assert_eq!(harness.state().textures.canvas_renders, n, "an unchanged slide isn't rendered again");
     }
 }

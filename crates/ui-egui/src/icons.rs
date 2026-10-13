@@ -284,6 +284,8 @@ icons! {
     Info => "info",
     Warning => "warning",
     Lock => "lock",
+    /// Open padlock (Selection pane: an object that isn't locked).
+    Unlock => "unlock",
     Eye => "eye",
     EyeOff => "eye-off",
     Close => "close",
@@ -2262,22 +2264,30 @@ fn draw(p: &Pen<'_>, icon: Icon) {
             p.seg((12.0, 9.0), (12.0, 14.0), D);
             p.dot((12.0, 17.2), 1.2, D);
         }
+        // Selection pane toggles: monochrome outlines in the ink colour.
         I::Lock => {
             let mut sh = vec![(7.5, 10.5), (7.5, 8.0)];
             sh.extend(arc_pts((12.0, 8.0), 4.5, 4.5, 180.0, 360.0));
             sh.push((16.5, 10.5));
             p.line(&sh, K);
-            p.rect(4.5, 10.5, 19.5, 21.5, 1.8, Y, K);
-            p.dot((12.0, 15.0), 1.5, D);
-            p.seg((12.0, 15.5), (12.0, 18.3), D);
+            p.rect(4.5, 10.5, 19.5, 21.5, 1.8, N, K);
+            p.seg((12.0, 14.5), (12.0, 17.5), K);
+        }
+        I::Unlock => {
+            // The shackle swung open: its left leg out of the body, raised.
+            let mut sh = vec![(12.0, 10.5), (12.0, 6.0)];
+            sh.extend(arc_pts((16.5, 6.0), 4.5, 4.5, 180.0, 360.0));
+            sh.push((21.0, 8.5));
+            p.line(&sh, K);
+            p.rect(3.0, 10.5, 16.5, 21.5, 1.8, N, K);
+            p.seg((9.75, 14.5), (9.75, 17.5), K);
         }
         I::Eye | I::EyeOff => {
-            let mut e = quad_pts((2.0, 12.0), (12.0, 2.5), (22.0, 12.0), 16);
-            e.extend(quad_pts((22.0, 12.0), (12.0, 21.5), (2.0, 12.0), 16).into_iter().skip(1));
+            let mut e = quad_pts((2.0, 12.0), (12.0, 4.0), (22.0, 12.0), 16);
+            e.extend(quad_pts((22.0, 12.0), (12.0, 20.0), (2.0, 12.0), 16).into_iter().skip(1));
             e.pop();
             p.shape(&e, N, K);
-            p.circle((12.0, 12.0), 3.4, B, N);
-            p.dot((12.0, 12.0), 1.3, if p.dis { N } else { W });
+            p.circle((12.0, 12.0), 3.2, N, K);
             if icon == I::EyeOff {
                 p.seg_w((4.0, 21.0), (20.0, 3.0), K, 1.1);
             }

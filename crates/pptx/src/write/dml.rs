@@ -78,22 +78,22 @@ pub fn fill(w: &mut W, x: &mut Exp, o: &mut Out, f: &Fill) {
         Fill::Solid { color: c } => solid(w, c),
         Fill::Gradient(g) => {
             w.open("a:gradFill", A::new().a("rotWithShape", if g.rotate_with_shape { "1" } else { "0" }));
-            w.open0("a:gsLst");
+            // No stops: no `a:gsLst`, so the gradient keeps taking them from its style's fill.
             let mut stops = g.stops.clone();
-            if stops.is_empty() {
-                stops.push(deckcraft_model::style::GradientStop { pos: 0.0, color: ColorRef::rgb(deckcraft_color::Rgba::WHITE) });
-            }
             if stops.len() == 1 {
                 let mut s = stops[0].clone();
                 s.pos = 1.0;
                 stops.push(s);
             }
-            for s in &stops {
-                w.open("a:gs", A::new().a("pos", pct(s.pos.clamp(0.0, 1.0))));
-                color(w, &s.color);
-                w.close("a:gs");
+            if !stops.is_empty() {
+                w.open0("a:gsLst");
+                for s in &stops {
+                    w.open("a:gs", A::new().a("pos", pct(s.pos.clamp(0.0, 1.0))));
+                    color(w, &s.color);
+                    w.close("a:gs");
+                }
+                w.close("a:gsLst");
             }
-            w.close("a:gsLst");
             match &g.shape {
                 GradientShape::Linear { angle, scaled } => {
                     w.empty("a:lin", A::new().a("ang", ang(*angle)).a("scaled", if *scaled { "1" } else { "0" }))
@@ -392,7 +392,19 @@ pub fn body_pr(w: &mut W, b: &BodyProps) {
     w.open("a:bodyPr", a);
     if let Some(p) = warp {
         w.open("a:prstTxWarp", A::new().a("prst", p));
-        w.empty0("a:avLst");
+        let adj: Vec<(usize, i64)> =
+            b.warp_adj.iter().take(8).enumerate().filter(|(_, v)| v.is_finite()).map(|(i, v)| (i, v.round().clamp(-2.0e9, 2.0e9) as i64)).collect();
+        if adj.is_empty() {
+            w.empty0("a:avLst");
+        } else {
+            let single = deckcraft_geom::warp::adjust_count(p) <= 1 && b.warp_adj.len() == 1;
+            w.open0("a:avLst");
+            for (i, v) in adj {
+                let n = if single { "adj".to_string() } else { format!("adj{}", i + 1) };
+                w.empty("a:gd", A::new().a("name", n).a("fmla", format!("val {v}")));
+            }
+            w.close("a:avLst");
+        }
         w.close("a:prstTxWarp");
     }
     match b.autofit {
@@ -432,6 +444,8 @@ pub fn ppr(w: &mut W, x: &mut Exp, o: &mut Out, tag: &str, level: Option<u8>, p:
         .o("defTabSz", p.default_tab.map(|v| emu(v).max(0)))
         .b("rtl", p.rtl)
         .b("eaLnBrk", p.east_asian_line_break)
+        .b("latinLnBrk", p.latin_line_break)
+        .b("hangingPunct", p.hanging_punct)
         .o("fontAlgn", p.font_align.as_deref().filter(|f| matches!(*f, "auto" | "t" | "ctr" | "base" | "b")));
     let has_kids = p.line_spacing.is_some()
         || p.space_before.is_some()

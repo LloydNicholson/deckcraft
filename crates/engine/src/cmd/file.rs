@@ -79,7 +79,10 @@ pub fn open_presentation(name: &str, bytes: &[u8]) -> Result<Presentation> {
 
 pub fn add_opened(s: &mut Session, name: &str, path: Option<String>, p: Presentation) -> usize {
     let title = std::path::Path::new(name).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| name.to_string());
-    s.add_document(DocState::new(p, path, title))
+    let missing_fonts = crate::fonts::missing_fonts(&p);
+    let mut st = DocState::new(p, path, title);
+    st.missing_fonts = missing_fonts;
+    s.add_document(st)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -89,7 +92,8 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = open_presentation(path, &bytes)?;
     let native = deckcraft_format::sniff(&bytes) || deckcraft_pptx::sniff(&bytes);
     let i = add_opened(s, path, native.then(|| path.to_string()), doc);
-    Ok(json!({"document": i, "slides": s.doc()?.doc.slides.len()}))
+    let st = s.doc()?;
+    Ok(json!({"document": i, "slides": st.doc.slides.len(), "missingFonts": st.missing_fonts}))
 }
 #[cfg(target_arch = "wasm32")]
 fn open(_s: &mut Session, _p: &Value) -> Result<Value> {
@@ -101,7 +105,7 @@ fn open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let data = str_param(p, "data").and_then(base64_decode).ok_or_else(|| bad("file.openBytes", "missing or invalid base64 `data`"))?;
     let doc = open_presentation(name, &data)?;
     let i = add_opened(s, name, None, doc);
-    Ok(json!({"document": i}))
+    Ok(json!({"document": i, "missingFonts": s.doc()?.missing_fonts}))
 }
 
 /// Encode the presentation in `format` (`deckcraft`, `pptx`, `outline`).

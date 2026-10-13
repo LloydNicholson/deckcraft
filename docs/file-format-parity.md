@@ -38,7 +38,7 @@ PowerPoint opens and saves; Viewer = opens only).
 |---|---|---|---|
 | PNG, JPEG, GIF (animated), BMP, TIFF, WebP | yes | yes | `image` 0.25; animated GIFs play since #39 |
 | SVG | yes (with PNG fallback) | **no** | The PNG fallback shows; SVG files can't be inserted |
-| EMF / WMF | yes | **no** | Common in decks made on Windows: blank picture |
+| EMF / WMF | yes | partial | Drawn as vectors (paths, pens, bitmaps); text records inside are skipped |
 | HEIC | yes (macOS) | no | |
 | Audio: MP3, AAC/M4A, ALAC, WAV, AIFF, CAF, FLAC, Ogg Vorbis, Opus | yes (Ogg/Opus partly) | yes | Pure-Rust decoders in `crates/media`, `crates/opus` |
 | WMA | yes (Windows) | embedded, not playable | |
@@ -63,13 +63,13 @@ the round trip even though DeckCraft doesn't model it.
 | Themes: colour, font (Latin/EA/CS), effect schemes, background styles | yes | yes | Unknown theme parts kept |
 | Notes slides and notes master | yes | yes | No notes-master editing view |
 | Handout master | no | no | |
-| Shapes: preset geometry (~150 presets), custom geometry, groups, connectors | yes | yes | Presets re-derived in `crates/geom/src/preset.rs` |
+| Shapes: preset geometry (~180 presets), custom geometry, groups, connectors | yes | yes | Presets re-derived in `crates/geom/src/preset.rs` (and `preset/extra.rs`) |
 | Fills: solid, gradient, picture (stretch/tile/crop), pattern, group | yes | yes | |
 | Lines: dash, compound, caps, joins, arrowheads | yes | yes | |
 | Effects: shadow, glow, soft edges, reflection | yes | yes | |
 | 3-D: `scene3d`, `sp3d` | kept | kept | Not rendered |
 | Text: runs, paragraphs, bullets, numbering, levels, autofit, columns, vertical, RTL, script fonts, fields, hyperlinks | yes | yes | Round-trip tests incl. `justLow` and date fields |
-| Text warp (`prstTxWarp`) | yes | yes | Not rendered |
+| Text warp (`prstTxWarp`) | yes | yes | All 40 presets rendered (`crates/geom/src/warp.rs`); adjust values (`avLst`) round-trip |
 | Pictures with crop, recolour, duotone, alpha, luminance | yes | yes | |
 | Tables with styles | yes | yes | |
 | Charts (`c:chartSpace`) | yes | yes | Original XML kept in `Chart.raw` |
@@ -93,10 +93,11 @@ the round trip even though DeckCraft doesn't model it.
    embedded fonts, every transition and animation) in a corpus repo, with import → render → export
    → re-import checks in CI and a PowerPoint reference render for each (owner runs PowerPoint).
 2. The round-trip losses above (#70, #74, #77).
-3. EMF/WMF and SVG rendering.
+3. SVG rendering, and text inside EMF/WMF.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | Text warps rendered; their adjust values read and written |
 | 2026-10-10 | major | Created from PowerPoint 16.113.4's `CFBundleDocumentTypes`, `crates/pptx` reader/writer and tests, and the open round-trip issues |

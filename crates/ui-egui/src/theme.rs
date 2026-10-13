@@ -155,6 +155,18 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
 
 /// UI fonts: Inter (from craft-fonts) when embedded, a Japanese UI face for CJK, then egui's.
 pub fn install_fonts(ctx: &egui::Context) {
+    install_fonts_with(ctx, &[]);
+}
+
+/// [`install_fonts`], with `extra` faces from the font database after every interface font: the
+/// installed or embedded faces that draw text the interface faces lack (Hangul, Simplified
+/// Chinese, Devanagari…, #101). See [`crate::uifonts`].
+pub fn install_fonts_with(ctx: &egui::Context, extra: &[std::sync::Arc<deckcraft_fonts::FontFace>]) {
+    ctx.set_fonts(font_definitions(extra));
+}
+
+/// The interface font definitions; see [`install_fonts_with`].
+pub fn font_definitions(extra: &[std::sync::Arc<deckcraft_fonts::FontFace>]) -> FontDefinitions {
     let mut defs = FontDefinitions::default();
     let mut names = vec![];
     for (i, f) in deckcraft_fonts::CRAFT_FONTS.iter().enumerate() {
@@ -178,7 +190,24 @@ pub fn install_fonts(ctx: &egui::Context) {
     let mut bold: Vec<String> = names.iter().filter(|(fam, st, _)| *fam == "Inter" && *st == "SemiBold").map(|(_, _, n)| n.clone()).collect();
     bold.extend(defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
     defs.families.insert(FontFamily::Name("bold".into()), bold);
-    ctx.set_fonts(defs);
+    add_fallback_faces(&mut defs, extra);
+    defs
+}
+
+/// Add `faces` after every other font of each interface family (the last fallbacks).
+pub fn add_fallback_faces(defs: &mut FontDefinitions, faces: &[std::sync::Arc<deckcraft_fonts::FontFace>]) {
+    for f in faces {
+        let name = format!("fallback {} {} {}", f.family, f.style, f.id());
+        if defs.font_data.contains_key(&name) {
+            continue;
+        }
+        let mut data = FontData::from_owned(f.data().to_vec());
+        data.index = f.index();
+        defs.font_data.insert(name.clone(), std::sync::Arc::new(data));
+        for list in defs.families.values_mut() {
+            list.push(name.clone());
+        }
+    }
 }
 
 pub fn bold(size: f32) -> egui::FontId {
