@@ -29,8 +29,26 @@ pub fn ui_shortcut(app: &mut SlideApp, key: egui::Key, m: Mods) -> bool {
             return true;
         }
         (S, true, true, false) => "app.saveAsDialog",
+        // File tab: Alt+F opens it on Home with the keyboard in its side menu; Ctrl+P on Print.
+        (F, false, false, true) => {
+            app.open_backstage(crate::backstage::Page::Home);
+            if let Some(b) = app.backstage.as_mut() {
+                b.focus = Some(0);
+            }
+            return true;
+        }
+        (P, true, false, false) => {
+            if app.session.active().is_none() {
+                return false;
+            }
+            app.open_backstage(crate::backstage::Page::Print);
+            return true;
+        }
+        (W, true, false, false) => {
+            app.close_presentation();
+            return true;
+        }
         (O, true, false, false) => "app.openDialog",
-        (W, true, false, false) => "app.close",
         (P, true, true, false) => "app.palette",
         (Comma, true, false, false) => "app.preferences",
         (Equals | Plus, true, false, false) => "view.zoomIn",
@@ -71,7 +89,7 @@ pub fn palette(app: &mut SlideApp, ctx: &egui::Context) {
                 .session
                 .commands()
                 .into_iter()
-                // `app.close` (below) is Close for people: it asks about unsaved changes.
+                // `app.closePresentation` (below) is Close for people: it asks about unsaved changes.
                 .filter(|c| c.enabled && c.id != "file.close")
                 .map(|c| (c.id.to_string(), c.label.to_string(), c.shortcut))
                 .chain(crate::UI_COMMANDS.iter().map(|c| (c.0.to_string(), c.1.to_string(), c.2)))
@@ -135,10 +153,11 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("New Presentation", "file.new"),
                 ("Open…", "app.openDialog"),
                 ("-", ""),
-                ("Close", "app.close"),
+                ("Close", "app.closePresentation"),
                 ("Save", "file.save"),
                 ("Save As…", "app.saveAsDialog"),
                 ("Export…", "app.exportDialog"),
+                ("Print…", "app.print"),
                 ("-", ""),
                 ("Properties", "file.properties"),
             ],

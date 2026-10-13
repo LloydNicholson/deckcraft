@@ -77,6 +77,12 @@ pub fn fill_el(imp: &mut Imp, part: &Part, f: &El) -> Option<Fill> {
         "solidFill" => Fill::Solid { color: color(f).unwrap_or(ColorRef::rgb(Rgba::BLACK)) },
         "gradFill" => Fill::Gradient(gradient(f)),
         "blipFill" => match blip_fill(imp, part, f) {
+            // A picture filling a shape or background with neither `a:stretch` nor `a:tile` is
+            // tiled at its own size, as PowerPoint draws it.
+            Some(mut p) if f.child("stretch").is_none() && f.child("tile").is_none() => {
+                p.mode = PictureMode::Tile { tx: 0.0, ty: 0.0, sx: 1.0, sy: 1.0, flip: "none".into(), align: "tl".into() };
+                Fill::Picture(p)
+            }
             Some(p) => Fill::Picture(p),
             None => Fill::None,
         },
@@ -251,6 +257,14 @@ pub fn effects(el: &El) -> Effects {
             "innerShdw" => fx.inner_shadow = Some(shadow(e, true)),
             "glow" => fx.glow = Some(Glow { color: color(e).unwrap_or(ColorRef::rgb(Rgba::BLACK)), radius: pt(e, "rad").unwrap_or(0.0).max(0.0) }),
             "softEdge" => fx.soft_edge = Some(pt(e, "rad").unwrap_or(0.0).max(0.0)),
+            "fillOverlay" => {
+                let fill = e.elements().find_map(|f| match f.local() {
+                    "solidFill" => color(f).map(|c| Fill::Solid { color: c }),
+                    "gradFill" => Some(Fill::Gradient(gradient(f))),
+                    _ => None,
+                });
+                fx.fill_overlay = fill.map(|fill| deckcraft_model::style::FillOverlay { blend: e.attr("blend").unwrap_or("over").to_string(), fill });
+            }
             "reflection" => {
                 fx.reflection = Some(Reflection {
                     blur: pt(e, "blurRad").unwrap_or(0.0),
@@ -315,11 +329,43 @@ pub fn body_pr(b: &El) -> BodyProps {
             }
             "spAutoFit" => p.autofit = Some(AutoFit::Shape),
             "noAutofit" => p.autofit = Some(AutoFit::None),
-            "prstTxWarp" => p.warp = e.attr("prst").filter(|w| *w != "textNoShape").map(String::from),
+            "prstTxWarp" => {
+                p.warp = e.attr("prst").filter(|w| *w != "textNoShape" && !w.is_empty()).map(String::from);
+                p.warp_adj = p.warp.as_deref().map(|w| warp_adjusts(w, e)).unwrap_or_default();
+            }
             _ => {}
         }
     }
     p
+}
+
+/// `prstTxWarp/avLst` guides `adj` / `adj1`… as raw values by index (empty when none is given);
+/// slots the file leaves out keep the preset's default.
+fn warp_adjusts(preset: &str, e: &El) -> Vec<f64> {
+    let mut adj: Vec<f64> = Vec::new();
+    let Some(av) = e.child("avLst") else { return adj };
+    let defaults = deckcraft_geom::warp::adjust_defaults(preset);
+    for gd in av.children_named("gd").take(16) {
+        let n = gd.attr("name").unwrap_or("");
+        let idx = if n == "adj" {
+            0
+        } else if let Some(k) = n.strip_prefix("adj").and_then(|k| k.parse::<usize>().ok()).filter(|k| (1..=8).contains(k)) {
+            k - 1
+        } else {
+            continue;
+        };
+        let Some(v) = gd.attr("fmla").and_then(|f| f.trim().strip_prefix("val")).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite())
+        else {
+            continue;
+        };
+        while adj.len() <= idx {
+            adj.push(defaults.get(adj.len()).copied().unwrap_or(0.0));
+        }
+        if let Some(slot) = adj.get_mut(idx) {
+            *slot = v.clamp(-1.0e9, 1.0e9);
+        }
+    }
+    adj
 }
 
 fn spacing(e: &El) -> Option<Spacing> {
@@ -339,6 +385,8 @@ pub fn ppr(imp: &mut Imp, part: &Part, p: &El) -> (Option<u8>, ParaProps, Option
         rtl: p.bool("rtl"),
         font_align: p.attr("fontAlgn").map(String::from),
         east_asian_line_break: p.bool("eaLnBrk"),
+        latin_line_break: p.bool("latinLnBrk"),
+        hanging_punct: p.bool("hangingPunct"),
         default_tab: pt(p, "defTabSz"),
         ..Default::default()
     };
