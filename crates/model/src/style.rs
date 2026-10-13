@@ -387,6 +387,16 @@ pub struct Effects {
     pub bevel: Option<String>,
     /// Unmodelled 3-D XML kept for round-trip (`scene3d`, `sp3d`).
     pub raw3d: Option<String>,
+    /// `a:fillOverlay`: a fill blended over the shape's fill (`blend`: `over`, `mult`, `screen`,
+    /// `darken`, `lighten`). Only solid and gradient overlays are kept.
+    pub fill_overlay: Option<FillOverlay>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FillOverlay {
+    pub blend: String,
+    pub fill: Fill,
 }
 
 impl Effects {
@@ -397,6 +407,7 @@ impl Effects {
             && self.soft_edge.is_none()
             && self.reflection.is_none()
             && self.bevel.is_none()
+            && self.fill_overlay.is_none()
     }
 }
 

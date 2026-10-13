@@ -24,6 +24,22 @@ fn ignorable(c: char) -> bool {
         || matches!(c as u32, 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2069 | 0xFE00..=0xFE0F | 0xFEFF | 0xE0100..=0xE01EF)
 }
 
+/// Is the cluster an emoji drawn in colour: a pictograph that defaults to emoji presentation, or
+/// any sequence with an emoji presentation selector (U+FE0F), a zero-width joiner between
+/// pictographs, a skin tone modifier, regional indicators (flags) or a keycap?
+pub fn is_emoji_cluster(cluster: &[char]) -> bool {
+    if cluster.contains(&'\u{FE0E}') {
+        return false;
+    }
+    let pictographic = |c: char| matches!(c as u32, 0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x2190..=0x21FF | 0x2300..=0x23FF);
+    let default_emoji =
+        |c: char| matches!(c as u32, 0x1F300..=0x1F64F | 0x1F680..=0x1F6FF | 0x1F900..=0x1F9FF | 0x1FA70..=0x1FAFF | 0x1F1E6..=0x1F1FF);
+    cluster.iter().any(|&c| default_emoji(c))
+        || (cluster.contains(&'\u{FE0F}') && cluster.iter().any(|&c| pictographic(c) || c.is_ascii_digit() || c == '#' || c == '*'))
+        || (cluster.contains(&'\u{200D}') && cluster.iter().any(|&c| pictographic(c)))
+        || cluster.contains(&'\u{20E3}')
+}
+
 /// Does `face` draw every character of the cluster?
 pub fn covers_cluster(face: &FontFace, cluster: &[char]) -> bool {
     cluster.iter().all(|c| ignorable(*c) || face.covers(*c))
@@ -55,8 +71,27 @@ impl FontDb {
     /// bundled face for its script, else an installed face for the script, else any loaded
     /// face that draws it, else `chain[0]` (or the default face if `chain` is empty).
     pub fn cascade(&self, cluster: &[char], chain: &[Arc<FontFace>], style: &str) -> Arc<FontFace> {
+        // Emoji take a colour face (with its ZWJ sequences, skin tones and flags) before the
+        // document's fonts, as PowerPoint draws them, even when a text font has a plain glyph.
+        if is_emoji_cluster(cluster) {
+            if let Some(f) = chain.iter().find(|f| f.is_color() && covers_cluster(f, cluster)) {
+                return f.clone();
+            }
+            if let Some(key) = cluster.iter().copied().find(|c| !ignorable(*c))
+                && let Some(f) = self.color_face_for(key, cluster)
+            {
+                return f;
+            }
+        }
         if let Some(f) = chain.iter().find(|f| covers_cluster(f, cluster)) {
             return f.clone();
+        }
+        // Text presentation (U+FE0E): a plain face, not a colour emoji one.
+        if cluster.contains(&'\u{FE0E}') {
+            let faces = self.read_faces();
+            if let Some(f) = faces.iter().find(|f| !f.is_color() && covers_cluster(f, cluster)) {
+                return f.clone();
+            }
         }
         let first = || chain.first().cloned().unwrap_or_else(|| self.face(crate::DEFAULT_FAMILY, style));
         let Some(key) = cluster.iter().copied().find(|c| !ignorable(*c)) else { return first() };
