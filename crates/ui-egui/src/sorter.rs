@@ -3,8 +3,8 @@
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use serde_json::json;
 
-use crate::SlideApp;
 use crate::theme::{self, Tokens};
+use crate::{SlideApp, widgets};
 
 /// Grid of slides; click selects, double-click opens in Normal view, drag reorders.
 pub fn show(app: &mut SlideApp, ui: &mut Ui) {
@@ -133,8 +133,9 @@ pub fn notes_page(app: &mut SlideApp, ui: &mut Ui) {
     let notes_rect = Rect::from_min_max(pos2(srect.min.x, srect.max.y + 24.0), pos2(srect.max.x, page.max.y - page_h * 0.06));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(notes_rect));
     let current = st.current_slide().map(|s| s.notes_text()).unwrap_or_default();
-    let id = egui::Id::new(("notespage", idx));
-    let mut buf: String = child.data_mut(|d| d.get_temp(id).unwrap_or_else(|| current.clone()));
+    let id = egui::Id::new(("notespage", st.uid, idx));
+    let stored: Option<(String, String)> = child.data_mut(|d| d.get_temp(id));
+    let mut buf = widgets::text_draft(stored, &current);
     let r = child.add(
         egui::TextEdit::multiline(&mut buf)
             .hint_text("Click to add text")
@@ -147,7 +148,7 @@ pub fn notes_page(app: &mut SlideApp, ui: &mut Ui) {
     if r.lost_focus() && buf != current {
         let _ = app.run("slide.notes", json!({"text": buf, "index": idx}));
     }
-    child.data_mut(|d| d.insert_temp(id, buf));
+    child.data_mut(|d| d.insert_temp(id, (current, buf)));
     let nav = ui.input(|i| (i.key_pressed(egui::Key::PageDown), i.key_pressed(egui::Key::PageUp)));
     if nav.0 {
         let _ = app.run("slide.next", json!({}));

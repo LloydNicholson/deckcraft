@@ -67,6 +67,26 @@ fn text_editing_flow() {
 }
 
 #[test]
+fn editing_text_refits_a_saved_shrink() {
+    use deckcraft_model::text::AutoFit;
+    let mut s = session();
+    let title = s.doc().unwrap().current_slide().unwrap().shapes[0].id;
+    s.execute("text.edit", &json!({"id": title.0})).unwrap();
+    s.execute("text.insert", &json!({"text": "Hi"})).unwrap();
+    // As if opened from a file PowerPoint saved shrunk.
+    s.edit(|doc, sel| {
+        let shapes = crate::shapes_mut(doc, sel).unwrap();
+        let sh = deckcraft_model::find_shape_mut(shapes, title).unwrap();
+        sh.text.as_mut().unwrap().body.autofit = Some(AutoFit::Shrink { font_scale: 0.5, line_reduction: 0.2 });
+        Ok(())
+    })
+    .unwrap();
+    s.execute("text.insert", &json!({"text": "!"})).unwrap();
+    let sh = s.doc().unwrap().shape(title).cloned().unwrap();
+    assert_eq!(sh.text.unwrap().body.autofit, Some(AutoFit::Shrink { font_scale: 1.0, line_reduction: 0.0 }));
+}
+
+#[test]
 fn smart_quotes_and_autocorrect() {
     let mut s = session();
     let title = s.doc().unwrap().current_slide().unwrap().shapes[0].id.0;
@@ -182,6 +202,19 @@ fn sample_deck_builds_and_renders() {
 }
 
 #[test]
+fn writable_format_for_path_rejects_formats_deckcraft_does_not_write() {
+    use crate::cmd::file::writable_format_for_path as f;
+    assert_eq!(f("a.deckcraft"), Some("deckcraft"));
+    assert_eq!(f("dir/A.PPTX"), Some("pptx"));
+    assert_eq!(f("a.pdf"), Some("pdf"));
+    assert_eq!(f("a.jpg"), Some("jpeg"));
+    assert_eq!(f("a.txt"), Some("outline"));
+    for path in ["a.odp", "a.gif", "a.svg", "a.outline", "a", "dir.v2/a"] {
+        assert_eq!(f(path), None, "{path}");
+    }
+}
+
+#[test]
 fn save_and_reopen_native() {
     let mut s = Session::new();
     sample::open_sample(&mut s).unwrap();
@@ -244,6 +277,11 @@ fn themes_and_slide_size() {
     assert_eq!(s.doc().unwrap().doc.masters[0].theme.name, "Ember");
     s.execute("design.slideSize", &json!({"preset": "standard"})).unwrap();
     assert_eq!(s.doc().unwrap().doc.slide_size.width, 720.0);
+    s.execute("design.slideSize", &json!({"preset": "widescreen", "orientation": "portrait"})).unwrap();
+    assert_eq!((s.doc().unwrap().doc.slide_size.width, s.doc().unwrap().doc.slide_size.height), (540.0, 960.0));
+    s.execute("design.slideSize", &json!({"w": 540.0, "h": 960.0, "orientation": "landscape"})).unwrap();
+    assert_eq!((s.doc().unwrap().doc.slide_size.width, s.doc().unwrap().doc.slide_size.height), (960.0, 540.0));
+    assert!(s.execute("design.slideSize", &json!({"preset": "standard", "orientation": "sideways"})).is_err());
     s.execute("design.headerFooter", &json!({"slideNumber": true, "footer": true, "footerText": "Hello"})).unwrap();
     let v = s.execute("slide.inspect", &json!({})).unwrap();
     assert!(v["shapes"].as_array().unwrap().iter().any(|x| x["placeholder"] == "sldNum"));
@@ -379,6 +417,22 @@ fn double_click_in_table_uses_grown_row_heights() {
     let ev = |kind, x, y| PointerEvent { kind, x, y, mods: Mods::default(), tol: 3.0 };
     s.pointer(ev(PointerKind::DoubleClick, 120.0, 106.0)).unwrap();
     assert_eq!(s.doc().unwrap().selection.text.as_ref().and_then(|t| t.cell), Some((0, 0)));
+}
+
+#[test]
+fn double_click_edits_text_inside_group() {
+    // A text member of a group is still editable: double-click reaches it through the group
+    // (regression: it used to be a no-op, so grouped text boxes could not be edited).
+    let mut s = session();
+    let a =
+        s.execute("shape.insert", &json!({"preset": "rect", "rect": [100.0, 100.0, 120.0, 50.0], "text": "Hello"})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("shape.insert", &json!({"preset": "rect", "rect": [300.0, 200.0, 50.0, 50.0]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("edit.select", &json!({"ids": [a, b]})).unwrap();
+    s.execute("arrange.group", &json!({})).unwrap();
+    let ev = |kind, x, y| PointerEvent { kind, x, y, mods: Mods::default(), tol: 3.0 };
+    // Double-click the grouped text box: it becomes editable and targets that member.
+    s.pointer(ev(PointerKind::DoubleClick, 160.0, 125.0)).unwrap();
+    assert_eq!(s.doc().unwrap().selection.text.as_ref().map(|t| t.shape.0 as u64), Some(a));
 }
 
 #[test]
@@ -834,4 +888,150 @@ fn slide_ranges_parse_like_powerpoints_print_box() {
     assert!(cmd::file::pdf_bytes(&doc, &json!({"slides": "5"})).is_err());
     let opts = cmd::file::pdf_options(&json!({"slides": [0, 7, 1]}), 2).unwrap();
     assert_eq!(opts.slides, Some(vec![0, 1]), "indices past the end are dropped");
+}
+
+#[test]
+fn cell_fill_walks_only_the_cells_a_huge_selection_covers() {
+    // A selection may reach far past the table; filling it touches the real cells and nothing more.
+    let mut s = session();
+    let id = s.execute("insert.table", &json!({"rows": 2, "cols": 2, "rect": [100.0, 100.0, 200.0, 40.0]})).unwrap()["id"].clone();
+    s.execute("table.selectCells", &json!({"id": id, "from": [1, 1], "to": [1_000_000_000u64, 1_000_000_000u64]})).unwrap();
+    s.execute("table.cellFill", &json!({"none": true})).unwrap();
+    let st = s.doc().unwrap();
+    let sh = st.shapes().iter().find(|sh| json!(sh.id) == id).unwrap();
+    let deckcraft_model::ShapeKind::Table(t) = &sh.kind else { panic!("not a table") };
+    let fills: Vec<bool> = [(0, 0), (0, 1), (1, 0), (1, 1)].iter().map(|&(r, c)| t.cell(r, c).is_some_and(|x| x.fill.is_some())).collect();
+    assert_eq!(fills, [false, false, false, true]);
+}
+
+/// Each slide as (title, [(level, bullet text)]).
+fn outline_of(p: &deckcraft_model::Presentation) -> Vec<(String, Vec<(u8, String)>)> {
+    p.slides
+        .iter()
+        .map(|s| {
+            let body =
+                s.shapes.get(1).and_then(|b| b.text.as_ref()).map(|t| t.paragraphs.iter().map(|p| (p.level, p.text())).collect()).unwrap_or_default();
+            (s.title(), body)
+        })
+        .collect()
+}
+
+const MD_OUTLINE: &str = "# Intro\n- Point one\n- Point two\n  - Sub point\n\n# Second\n- More\n";
+
+fn md_expected() -> Vec<(String, Vec<(u8, String)>)> {
+    vec![
+        ("Intro".into(), vec![(0, "Point one".into()), (0, "Point two".into()), (1, "Sub point".into())]),
+        ("Second".into(), vec![(0, "More".into())]),
+    ]
+}
+
+#[test]
+fn markdown_outlines_take_headings_as_slides_and_lists_as_bullets() {
+    let p = crate::cmd::file::open_presentation("outline.md", MD_OUTLINE.as_bytes()).unwrap();
+    assert_eq!(outline_of(&p), md_expected());
+    // numbered lists, `*` / `+` bullets, text under a heading, and closing #s
+    let p = crate::cmd::file::open_presentation("o.md", b"## Plan ##\n1. First\n2) Second\n* star\n+ plus\nA plain line\n").unwrap();
+    assert_eq!(
+        outline_of(&p),
+        vec![("Plan".into(), vec![(0, "First".into()), (0, "Second".into()), (0, "star".into()), (0, "plus".into()), (0, "A plain line".into())])]
+    );
+}
+
+#[test]
+fn slides_from_a_markdown_outline_file() {
+    let mut s = session();
+    s.execute("slide.fromOutline", &json!({"text": MD_OUTLINE, "markdown": true})).unwrap();
+    let doc = &s.doc().unwrap().doc;
+    assert_eq!(outline_of(doc)[1..], md_expected()[..]);
+}
+
+#[test]
+fn plain_outlines_are_unchanged() {
+    // .txt keeps the indentation format, and so does a .md without headings
+    let indented = "Intro\n\tPoint one\n\t\tSub point\nSecond\n\tMore\n";
+    let want =
+        vec![("Intro".to_string(), vec![(0, "Point one".to_string()), (1, "Sub point".to_string())]), ("Second".into(), vec![(0, "More".into())])];
+    for name in ["outline.txt", "outline.md"] {
+        let p = crate::cmd::file::open_presentation(name, indented.as_bytes()).unwrap();
+        assert_eq!(outline_of(&p), want, "{name}");
+    }
+    let p = crate::cmd::file::open_presentation("outline.txt", MD_OUTLINE.as_bytes()).unwrap();
+    assert_eq!(p.slides.first().map(|s| s.title()).as_deref(), Some("# Intro"));
+}
+
+fn text_box_xfrm(s: &Session, id: u64) -> deckcraft_geom::Xfrm {
+    let st = s.doc().unwrap();
+    cmd::xfrm_of(&st.doc, &st.selection, st.shape(deckcraft_model::ShapeId(id as u32)).unwrap())
+}
+
+fn right_click(s: &mut Session, x: f64, y: f64) -> serde_json::Value {
+    s.pointer(PointerEvent { kind: PointerKind::ContextClick, x, y, mods: Mods::default(), tol: 3.0 }).unwrap()
+}
+
+/// A blank slide with a rectangle A (100,100 200×100) and a text box B (400,100 200 wide),
+/// nothing selected.
+fn two_shapes() -> (Session, deckcraft_model::ShapeId, deckcraft_model::ShapeId) {
+    let mut s = session();
+    s.execute("slide.new", &json!({"layout": "blank"})).unwrap();
+    let a = s.execute("shape.insert", &json!({"preset": "rect", "rect": [100.0, 100.0, 200.0, 100.0], "text": "Shape A"})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let b = s.execute("insert.textBox", &json!({"rect": [400.0, 100.0, 200.0, 40.0], "text": "Box B"})).unwrap()["id"].as_u64().unwrap();
+    s.select(|_, sel| {
+        sel.shapes.clear();
+        sel.text = None;
+    })
+    .unwrap();
+    (s, deckcraft_model::ShapeId(a as u32), deckcraft_model::ShapeId(b as u32))
+}
+
+#[test]
+fn right_click_selects_the_shape_under_the_pointer() {
+    let (mut s, a, b) = two_shapes();
+    let undo_before = s.doc().unwrap().history.undo.len();
+    // An unselected shape: selected alone, no text editing, no drag.
+    let r = right_click(&mut s, 150.0, 150.0);
+    assert_eq!(r["selected"], json!([a]));
+    let st = s.doc().unwrap();
+    assert_eq!(st.selection.shapes, vec![a]);
+    assert!(st.selection.text.is_none());
+    assert!(!s.tool.dragging());
+    s.pointer(PointerEvent { kind: PointerKind::Drag, x: 190.0, y: 190.0, mods: Mods::default(), tol: 3.0 }).unwrap();
+    assert_eq!(text_box_xfrm(&s, a.0 as u64).x, 100.0);
+    // A text box, which a left click would start editing: only selected.
+    right_click(&mut s, 450.0, 115.0);
+    let st = s.doc().unwrap();
+    assert_eq!(st.selection.shapes, vec![b]);
+    assert!(st.selection.text.is_none());
+    // A multiple selection stays when the right click lands on one of its shapes.
+    s.execute("edit.select", &json!({"ids": [a, b]})).unwrap();
+    right_click(&mut s, 450.0, 115.0);
+    assert_eq!(s.doc().unwrap().selection.shapes, vec![a, b]);
+    // Empty slide: nothing selected (the slide menu).
+    let r = right_click(&mut s, 700.0, 450.0);
+    assert!(r["hit"].is_null(), "{r}");
+    assert!(s.doc().unwrap().selection.shapes.is_empty());
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo_before);
+}
+
+#[test]
+fn right_click_in_edited_text_keeps_the_text_selection() {
+    let (mut s, a, b) = two_shapes();
+    s.execute("text.edit", &json!({"id": a, "at": [0, 0]})).unwrap();
+    s.execute("text.move", &json!({"to": "wordRight", "extend": true})).unwrap();
+    let before = s.doc().unwrap().selection.text.clone().unwrap();
+    assert!(before.is_range());
+    // Anywhere in the box, even away from the selected word.
+    let r = right_click(&mut s, 280.0, 185.0);
+    assert_eq!(r["editing"], true);
+    assert_eq!(s.doc().unwrap().selection.text.as_ref(), Some(&before));
+    // The context menu's Copy and Cut then act on the selected text.
+    assert_eq!(s.execute("edit.copy", &json!({})).unwrap()["text"].as_str().unwrap().trim(), "Shape");
+    s.execute("edit.cut", &json!({})).unwrap();
+    assert_eq!(s.execute("text.get", &json!({"id": a})).unwrap()["text"].as_str().unwrap().trim(), "A");
+    // A right click on another shape leaves editing and selects that shape.
+    right_click(&mut s, 450.0, 115.0);
+    let st = s.doc().unwrap();
+    assert!(st.selection.text.is_none());
+    assert_eq!(st.selection.shapes, vec![b]);
 }

@@ -11,6 +11,7 @@ pub mod canvas;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
+pub mod eyedropper;
 pub mod fillui;
 pub mod icons;
 pub mod media;
@@ -131,6 +132,17 @@ impl Default for UiState {
     }
 }
 
+/// Text put on the system clipboard when the copied objects (a rectangle, a picture, slides…)
+/// carry no text. egui-winit drops Ctrl+V when the system clipboard is empty, so without it the
+/// shortcut never reached the session and only the context menu could paste objects (#182). An
+/// invisible word joiner, so a paste into another app adds nothing visible.
+const OBJECTS_MARKER: &str = "\u{2060}";
+
+/// What a copy/cut leaves on the system clipboard for the session's plain-text rendering `t`.
+fn system_clipboard_text(t: &str) -> String {
+    if t.is_empty() { OBJECTS_MARKER.to_string() } else { t.to_string() }
+}
+
 /// UI-only commands (id, label, shortcut, params).
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.normal", "Normal", None, "{}"),
@@ -197,6 +209,8 @@ pub struct SlideApp {
     pub synthetic: Vec<egui::Event>,
     /// Canvas screen rect and points-per-slide-point scale (for control & tests).
     pub canvas_rect: Option<egui::Rect>,
+    /// The Eyedropper is waiting for a click on the slide.
+    pub eyedropper: Option<eyedropper::State>,
     pub canvas_scale: f32,
     pub slide_rect: Option<egui::Rect>,
     /// Where the canvas texture (the slide and the pasteboard drawn around it) is on screen.
@@ -209,6 +223,8 @@ pub struct SlideApp {
     /// creating or closing a presentation leaves it.
     pub backstage: Option<backstage::Backstage>,
     pending_urls: Vec<String>,
+    /// Text for the system clipboard from a Copy or Cut command, handed over on the next frame.
+    pending_copy: Option<String>,
     shot_token: u64,
     queued_shots: Vec<(u64, f64, u32)>,
     pending_shots: Vec<(u64, Option<String>, Sender<ControlResponse>, f64)>,
@@ -247,6 +263,7 @@ impl SlideApp {
             perf: Perf { frame_ms: 0.0, render_ms: 0.0, fps: 0.0 },
             synthetic: vec![],
             canvas_rect: None,
+            eyedropper: None,
             canvas_scale: 1.0,
             slide_rect: None,
             canvas_region: None,
@@ -254,6 +271,7 @@ impl SlideApp {
             integrated_titlebar: false,
             backstage: None,
             pending_urls: vec![],
+            pending_copy: None,
             shot_token: 0,
             queued_shots: vec![],
             pending_shots: vec![],
@@ -276,12 +294,13 @@ impl SlideApp {
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
-        let msg = msg.into();
-        // The File view (and the start screen) hides the status bar: say it in a toast there.
-        if self.backstage.is_some() {
-            self.toast = Some(toast::Toast { text: msg.clone(), at: now_ms() });
-        }
-        self.status = Some((msg, now_ms()));
+        self.status = Some((msg.into(), now_ms()));
+    }
+
+    /// A message that must be seen wherever the user is: a toast, which also shows over the start
+    /// screen and the File tab, where there is no status bar.
+    pub fn notify(&mut self, msg: impl Into<String>) {
+        self.toast = Some(toast::Toast { text: msg.into(), at: now_ms() });
     }
 
     /// Run a command by id (UI commands here, everything else in the engine). Errors show in the
@@ -292,8 +311,16 @@ impl SlideApp {
         } else {
             self.session.execute(id, &params).map_err(|e| e.to_string())
         };
-        if let Err(e) = &r {
-            self.set_status(e.clone());
+        match &r {
+            // Copy and Cut from the ribbon, menus, the slide's context menu or the control channel
+            // put the text on the system clipboard, as Ctrl+C and Ctrl+X do (#431).
+            Ok(v) if matches!(id, "edit.copy" | "edit.cut") => {
+                if let Some(t) = v.get("text").and_then(Value::as_str) {
+                    self.pending_copy = Some(t.to_string());
+                }
+            }
+            Ok(_) => {}
+            Err(e) => self.set_status(e.clone()),
         }
         self.drain_requests();
         r
@@ -568,8 +595,10 @@ impl SlideApp {
 
     fn pick_and_open(&mut self) {
         if let Some(pick) = self.services.pick_open.as_mut() {
-            if let Some(path) = pick("open") {
-                let _ = self.open_path(&path);
+            if let Some(path) = pick("open")
+                && let Err(e) = self.open_path(&path)
+            {
+                self.notify(e);
             }
         } else if let Some(f) = self.services.open_async.as_mut() {
             f("open");
@@ -713,12 +742,18 @@ impl SlideApp {
             self.set_status(format!("{name}: DeckCraft can't open this kind of file"));
             return;
         };
-        let p = if cmd == "slide.fromOutline" { json!({"text": String::from_utf8_lossy(bytes)}) } else { json!({"name": name, "data": data}) };
+        let p = if cmd == "slide.fromOutline" {
+            json!({"text": String::from_utf8_lossy(bytes), "markdown": lower.ends_with(".md")})
+        } else {
+            json!({"name": name, "data": data})
+        };
         if self.session.active().is_none() && cmd != "file.openBytes" {
             let _ = self.session.execute("file.new", &json!({}));
         }
-        if let Err(e) = self.session.execute(cmd, &p) {
-            self.set_status(e.to_string());
+        match self.session.execute(cmd, &p) {
+            Err(e) if cmd == "file.openBytes" => self.notify(e.to_string()),
+            Err(e) => self.set_status(e.to_string()),
+            Ok(_) => {}
         }
     }
 
@@ -890,17 +925,19 @@ impl SlideApp {
                     if let Ok(v) = self.session.execute("edit.copy", &json!({}))
                         && let Some(t) = v.get("text").and_then(Value::as_str)
                     {
-                        ctx.copy_text(t.to_string());
+                        ctx.copy_text(system_clipboard_text(t));
                     }
                 }
                 egui::Event::Cut => {
                     if let Ok(v) = self.session.execute("edit.cut", &json!({}))
                         && let Some(t) = v.get("text").and_then(Value::as_str)
                     {
-                        ctx.copy_text(t.to_string());
+                        ctx.copy_text(system_clipboard_text(t));
                     }
                 }
                 egui::Event::Paste(text) => {
+                    // Our own marker for objects without text: paste what the session copied.
+                    let text = if text == OBJECTS_MARKER { String::new() } else { text };
                     // An image on the clipboard (screenshots, copied pictures) becomes a picture.
                     let img = if text.is_empty() { self.services.clipboard_image.as_mut().and_then(|f| f()) } else { None };
                     let r = match img {
@@ -940,6 +977,7 @@ impl SlideApp {
         let t0 = now_ms();
         let t = theme::Tokens::get(&ctx);
         self.tick_media(&ctx);
+        eyedropper::tick(self, &ctx);
         if self.show.is_some() {
             show::ui(self, ui);
             self.perf.frame_ms = now_ms() - t0;
@@ -989,6 +1027,9 @@ impl SlideApp {
         menus::palette(self, &ctx);
         for url in std::mem::take(&mut self.pending_urls) {
             ctx.open_url(egui::OpenUrl::new_tab(url));
+        }
+        if let Some(t) = self.pending_copy.take() {
+            ctx.copy_text(t);
         }
         self.drain_requests();
         self.perf.frame_ms = now_ms() - t0;
@@ -1132,6 +1173,8 @@ fn js_now() -> f64 {
     js_sys::Date::now()
 }
 
+#[cfg(test)]
+mod eyedropper_tests;
 #[cfg(test)]
 mod ime_tests;
 
@@ -1304,6 +1347,28 @@ mod tests {
         assert!(size(&mut harness).unwrap_or(f64::MAX) < after, "Ctrl+[ shrinks");
     }
 
+    /// Export… had no visible control: only the command palette reached it.
+    #[test]
+    fn title_bar_export_opens_the_export_dialog() {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        harness.run_steps(2);
+        assert!(harness.state().dialog.is_none());
+        // Quick access: Home, Save, Export, each 24 points wide with 2 between, from x = 10.
+        let pos = egui::pos2(10.0 + 2.0 * 26.0 + 12.0, ribbon::TITLE_H / 2.0);
+        harness.hover_at(pos);
+        harness.run_steps(1);
+        harness.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        harness.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        harness.run_steps(2);
+        assert_eq!(harness.state().dialog.as_ref().map(|d| d.id.as_str()), Some("export"));
+    }
+
     /// #172: a recent file that was moved or deleted is marked on the start screen, clicking it
     /// says so in a toast (the status bar isn't shown), and it can be removed from the list.
     #[test]
@@ -1471,5 +1536,72 @@ mod tests {
         let n = app.textures.canvas_renders;
         harness.run_steps(3);
         assert_eq!(harness.state().textures.canvas_renders, n, "an unchanged slide isn't rendered again");
+    }
+
+    /// #431: the ribbon's Copy and Cut, the slide's context menu, the menus and the control
+    /// channel all run the commands; they put the text on the system clipboard, as Ctrl+C and
+    /// Ctrl+X do.
+    #[test]
+    fn copy_and_cut_commands_reach_the_system_clipboard() {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        harness.run_steps(2);
+        let copied = |h: &egui_kittest::Harness<'_, SlideApp>| {
+            h.output().platform_output.commands.iter().find_map(|c| match c {
+                egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                _ => None,
+            })
+        };
+        let title = harness.state().session.active().unwrap().doc.slides[0].shapes[0].id.0;
+        harness.state_mut().session.execute("text.edit", &json!({"id": title})).unwrap();
+        harness.state_mut().session.type_text("Aurora").unwrap();
+        harness.state_mut().session.key("Escape", Mods::default()).unwrap();
+        harness.run_steps(1);
+        assert_eq!(copied(&harness), None);
+
+        harness.state_mut().run("edit.copy", json!({})).unwrap();
+        harness.run_steps(1);
+        assert_eq!(copied(&harness).as_deref(), Some("Aurora"), "Copy puts the text on the clipboard");
+        harness.run_steps(1);
+        assert_eq!(copied(&harness), None, "only once");
+
+        harness.state_mut().run("edit.cut", json!({})).unwrap();
+        harness.run_steps(1);
+        assert_eq!(copied(&harness).as_deref(), Some("Aurora"), "Cut does too");
+        assert!(harness.state().session.active().unwrap().doc.slides[0].shapes.iter().all(|s| s.id.0 != title), "and removes the shape");
+    }
+
+    /// #182: Ctrl+C then Ctrl+V did nothing for objects without text (a rectangle), because
+    /// egui-winit drops Ctrl+V when the system clipboard is empty; the context menu worked.
+    #[test]
+    fn copy_then_paste_shortcut_duplicates_an_object_without_text() {
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(Session::with_new(), Services::default()),
+        );
+        harness.run_steps(2);
+        harness.state_mut().session.execute("shape.insert", &json!({"preset": "rect", "rect": [10, 10, 50, 50]})).unwrap();
+        let count = |h: &egui_kittest::Harness<'_, SlideApp>| h.state().session.doc().unwrap().current_slide().unwrap().shapes.len();
+        let before = count(&harness);
+
+        // What the copy leaves on the system clipboard is what egui-winit hands back on Ctrl+V.
+        assert_eq!(system_clipboard_text(""), OBJECTS_MARKER);
+        assert_eq!(system_clipboard_text("hello"), "hello");
+        harness.event(egui::Event::Copy);
+        harness.run_steps(2);
+        harness.event(egui::Event::Paste(OBJECTS_MARKER.to_string()));
+        harness.run_steps(2);
+        assert_eq!(count(&harness), before + 1, "the shortcut pastes a copy of the rectangle");
+        let d = harness.state().session.active().unwrap();
+        let pasted = d.doc.slides[0].shapes.last().unwrap();
+        assert!(pasted.text.as_ref().is_none_or(|t| t.text().is_empty()), "a copy of the rectangle, not a text box holding the marker");
     }
 }

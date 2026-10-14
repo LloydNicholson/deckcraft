@@ -3,7 +3,7 @@
 
 use deckcraft_model::resolve::{self, Ctx};
 use deckcraft_model::text::{Hyperlink, TextBody};
-use deckcraft_model::{Presentation, Shape, ShapeKind};
+use deckcraft_model::{Presentation, Shape, ShapeId, ShapeKind};
 use deckcraft_text::{Opts, TextLayout};
 use kurbo::{Affine, Rect};
 
@@ -22,12 +22,32 @@ pub struct PlacedLink {
     /// Slide-space bounding box.
     pub rect: Rect,
     pub link: Hyperlink,
+    /// The shape that owns the link (for a text hyperlink, the shape holding the text).
+    pub shape: ShapeId,
+    /// A hyperlink on text, not the shape's own action.
+    pub text: bool,
+}
+
+/// A shape of the slide itself (not of its layout or master) with its slide-space bounding box:
+/// what a click in a slide show lands on.
+pub struct PlacedShape {
+    pub id: ShapeId,
+    /// Index into [`Placed::shapes`] of the group this shape is in.
+    pub parent: Option<usize>,
+    pub is_group: bool,
+    /// Slide-space bounding box.
+    pub rect: Rect,
+    /// The shape's own action (Insert ▸ Action), not its text hyperlinks.
+    pub link: Option<Hyperlink>,
 }
 
 #[derive(Default)]
 pub struct Placed {
     pub texts: Vec<PlacedText>,
     pub links: Vec<PlacedLink>,
+    /// The slide's own shapes in drawing order (back to front; a group before its children). Hidden
+    /// shapes are left out.
+    pub shapes: Vec<PlacedShape>,
 }
 
 /// Text and links of slide `index` (master and layout graphics first, as rendered).
@@ -40,22 +60,25 @@ pub fn place_slide(pres: &Presentation, index: usize) -> Placed {
     if show_master {
         let mctx = Ctx::for_master(pres, rctx.master);
         for s in rctx.master.shapes.iter().filter(|s| s.ph.is_none()) {
-            place(&mut out, &mctx, &fields, s, Affine::IDENTITY, 0);
+            place(&mut out, &mctx, &fields, s, Affine::IDENTITY, 0, None, false);
         }
     }
     if show_layout && let Some(l) = rctx.layout {
         let lctx = Ctx::for_layout(pres, rctx.master, l);
         for s in l.shapes.iter().filter(|s| s.ph.is_none()) {
-            place(&mut out, &lctx, &fields, s, Affine::IDENTITY, 0);
+            place(&mut out, &lctx, &fields, s, Affine::IDENTITY, 0, None, false);
         }
     }
     for s in &slide.shapes {
-        place(&mut out, &rctx, &fields, s, Affine::IDENTITY, 0);
+        place(&mut out, &rctx, &fields, s, Affine::IDENTITY, 0, None, true);
     }
     out
 }
 
-fn place(out: &mut Placed, rctx: &Ctx, fields: &SlideFields, s: &Shape, parent: Affine, depth: usize) {
+/// `group` is the index in `out.shapes` of the enclosing group; `own` is true for the slide's own
+/// shapes (recorded in `out.shapes`), false for the layout's and master's.
+#[allow(clippy::too_many_arguments)]
+fn place(out: &mut Placed, rctx: &Ctx, fields: &SlideFields, s: &Shape, parent: Affine, depth: usize, group: Option<usize>, own: bool) {
     if depth > 32 || s.hidden {
         return;
     }
@@ -64,15 +87,22 @@ fn place(out: &mut Placed, rctx: &Ctx, fields: &SlideFields, s: &Shape, parent: 
         return;
     }
     let m = parent * x.affine();
+    let rect = m.transform_rect_bbox(Rect::new(0.0, 0.0, x.w, x.h));
     if let Some(link) = &s.click {
-        out.links.push(PlacedLink { rect: m.transform_rect_bbox(Rect::new(0.0, 0.0, x.w, x.h)), link: link.clone() });
+        out.links.push(PlacedLink { rect, link: link.clone(), shape: s.id, text: false });
     }
+    let me = if own {
+        out.shapes.push(PlacedShape { id: s.id, parent: group, is_group: matches!(s.kind, ShapeKind::Group { .. }), rect, link: s.click.clone() });
+        Some(out.shapes.len() - 1)
+    } else {
+        None
+    };
     match &s.kind {
         ShapeKind::Group { children, child } => {
             let ch = Rect::new(child.x, child.y, child.x + child.w, child.y + child.h);
             let gm = parent * deckcraft_geom::group_child_affine(&x, ch);
             for c in children {
-                place(out, rctx, fields, c, gm, depth + 1);
+                place(out, rctx, fields, c, gm, depth + 1, me, own);
             }
         }
         ShapeKind::Table(t) => {
@@ -81,20 +111,21 @@ fn place(out: &mut Placed, rctx: &Ctx, fields: &SlideFields, s: &Shape, parent: 
                 let Some(cell) = t.cell(r, c).filter(|cell| !cell.text.is_empty()) else { continue };
                 let body = table::cell_body(rctx, t, r, c, cell);
                 let tmp = Shape { text: Some(body.clone()), ..Default::default() };
-                place_text(out, rctx, fields, &tmp, &body, rect, m);
+                place_text(out, rctx, fields, s.id, &tmp, &body, rect, m);
             }
         }
         ShapeKind::Chart(_) | ShapeKind::Ink { .. } => {}
         _ => {
             let Some(body) = s.text.as_ref().filter(|b| !b.is_empty()) else { return };
             let tr = shape_geometry(s, x.w, x.h).text_rect;
-            place_text(out, rctx, fields, s, body, tr, m);
+            place_text(out, rctx, fields, s.id, s, body, tr, m);
         }
     }
 }
 
 /// Lay out `body` in text rect `tr` of shape `s` (shape-local → slide `m`) and record it and its hyperlinks.
-fn place_text(out: &mut Placed, rctx: &Ctx, fields: &SlideFields, s: &Shape, body: &TextBody, tr: Rect, m: Affine) {
+#[allow(clippy::too_many_arguments)]
+fn place_text(out: &mut Placed, rctx: &Ctx, fields: &SlideFields, owner: ShapeId, s: &Shape, body: &TextBody, tr: Rect, m: Affine) {
     let layout = deckcraft_text::layout(rctx, s, body, &Opts { rect: tr, fields, prompt_color: None, no_shrink: false });
     let m = crate::text_transform(m, tr, layout.rotation);
     // Text hyperlinks: one box per line segment of a linked run.
@@ -105,7 +136,7 @@ fn place_text(out: &mut Placed, rctx: &Ctx, fields: &SlideFields, s: &Shape, bod
         let first = run.glyphs.first().map(|g| g.1).unwrap_or(0.0);
         let (x0, x1) = line.span(run.chars.0, run.chars.1).unwrap_or((first, first));
         let r = Rect::new(x0, line.top, x1, line.bottom);
-        out.links.push(PlacedLink { rect: m.transform_rect_bbox(r), link });
+        out.links.push(PlacedLink { rect: m.transform_rect_bbox(r), link, shape: owner, text: true });
     }
     out.texts.push(PlacedText { layout, transform: m, body: body.clone() });
 }

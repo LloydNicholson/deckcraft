@@ -23,9 +23,7 @@ pub fn status_bar(app: &mut SlideApp, ui: &mut Ui) {
         p.text(pos2(rect.min.x + 120.0, rect.center().y), Align2::LEFT_CENTER, "English (United States)", theme::font(12.0), t.text_dim);
         // Transient status message.
         if let Some((msg, at)) = app.status.clone() {
-            if app.toast.as_ref().is_some_and(|t| t.text == msg) {
-                // Already said in a toast (from the File view).
-            } else if crate::now_ms() - at < 6000.0 {
+            if crate::now_ms() - at < 6000.0 {
                 p.text(pos2(rect.min.x + 290.0, rect.center().y), Align2::LEFT_CENTER, &msg, theme::font(12.0), t.accent);
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
             } else {

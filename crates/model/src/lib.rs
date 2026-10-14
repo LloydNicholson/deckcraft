@@ -11,6 +11,7 @@ pub mod anim;
 pub mod chart;
 pub mod defaults;
 pub mod edit;
+pub mod numfmt;
 pub mod resolve;
 pub mod style;
 pub mod table;

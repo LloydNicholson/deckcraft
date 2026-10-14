@@ -316,8 +316,6 @@ pub fn key(app: &mut SlideApp, key: Key, mods: deckcraft_engine::Mods) -> bool {
 /// Draws the File tab in place of the ribbon, slides and status bar.
 pub fn show(app: &mut SlideApp, ui: &mut Ui) {
     let Some(mut bs) = app.backstage.take() else { return };
-    // This view hides the status bar: what a page says there shows in a toast instead.
-    let said = app.status.as_ref().map(|s| s.1);
     let t = Tokens::get(ui.ctx());
     let has_doc = app.session.active().is_some();
     if !has_doc && bs.page.needs_doc() {
@@ -355,6 +353,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
             }
             if nav_item(ui, *nav, &bs, index, &t).clicked() {
                 bs.focus = None;
+                commit_props(app, &bs);
                 match act(app, *nav, bs.page) {
                     None => out.close = true,
                     Some(p) => out.page = Some(p),
@@ -369,6 +368,7 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
             for (k, nav) in bottom.iter().enumerate().rev() {
                 if nav_item(ui, *nav, &bs, first_bottom + k, &t).clicked() {
                     bs.focus = None;
+                    commit_props(app, &bs);
                     match act(app, *nav, bs.page) {
                         None => out.close = true,
                         Some(p) => out.page = Some(p),
@@ -406,11 +406,6 @@ pub fn show(app: &mut SlideApp, ui: &mut Ui) {
             });
         });
     });
-    if let Some((msg, at)) = &app.status
-        && Some(*at) != said
-    {
-        app.toast = Some(crate::toast::Toast { text: msg.clone(), at: *at });
-    }
     if let Some(page) = out.page {
         bs.go(page);
     }
@@ -606,9 +601,9 @@ fn recent_list(app: &mut SlideApp, ui: &mut Ui, query: &str, limit: usize) {
             continue;
         }
         if gone {
-            app.set_status(format!("Couldn't find {name}. It may have been moved, renamed or deleted."));
+            app.notify(format!("Couldn't find {name}. It may have been moved, renamed or deleted."));
         } else if let Err(e) = app.open_path(&path) {
-            app.set_status(e);
+            app.notify(e);
         }
     }
 }
@@ -864,15 +859,16 @@ fn info(app: &mut SlideApp, ui: &mut Ui, bs: &mut Backstage) {
                     let Some(draft) = bs.props.get_mut(i) else { continue };
                     let l = ui.label(RichText::new(*label).color(t.text_dim));
                     let id = ui.make_persistent_id(("backstage_prop", *key));
-                    // Show the presentation's value unless the field is being edited (undo…).
-                    if !ui.ctx().memory(|m| m.has_focus(id)) {
-                        draft.clone_from(&saved);
-                    }
                     let resp = ui.add(egui::TextEdit::singleline(draft).id(id).hint_text(*hint).desired_width(300.0)).labelled_by(l.id);
                     if resp.lost_focus() && *draft != saved {
+                        // Commit first: a click on another field takes the focus before this one is drawn.
                         let mut p = serde_json::Map::new();
                         p.insert((*key).to_string(), json!(draft.clone()));
                         let _ = app.run("file.properties", Value::Object(p));
+                    } else if !resp.has_focus() && *draft != saved {
+                        // Show the presentation's value unless the field is being edited (undo...).
+                        draft.clone_from(&saved);
+                        ui.ctx().request_repaint();
                     }
                     ui.end_row();
                 }
@@ -880,6 +876,24 @@ fn info(app: &mut SlideApp, ui: &mut Ui, bs: &mut Backstage) {
             });
         });
     });
+}
+
+/// Commits what the Info page's property fields hold and the presentation does not: a side-menu
+/// action such as Save runs before the field that is being left is drawn again (#422).
+fn commit_props(app: &mut SlideApp, bs: &Backstage) {
+    if bs.page != Page::Info {
+        return;
+    }
+    let Ok(v) = app.session.execute("file.info", &json!({})) else { return };
+    let mut p = serde_json::Map::new();
+    for ((key, _, _), draft) in PROPERTIES.iter().zip(&bs.props) {
+        if v["properties"].get(*key).and_then(Value::as_str).unwrap_or("") != *draft {
+            p.insert((*key).to_string(), json!(draft));
+        }
+    }
+    if !p.is_empty() {
+        let _ = app.run("file.properties", Value::Object(p));
+    }
 }
 
 /// `1234567` → `1.2 MB`.

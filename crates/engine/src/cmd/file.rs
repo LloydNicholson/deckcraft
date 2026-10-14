@@ -26,6 +26,15 @@ pub fn specs() -> Vec<CommandSpec> {
             info
         ),
         cmd!(query "file.render", "Render Slide", [], None, "{slide?: index, scale?, edit?: bool} → {png: base64, width, height}", has_doc, render),
+        cmd!(
+            query "slide.colorAt",
+            "Color At",
+            [],
+            None,
+            "{slide?: index, x, y (slide units), scale?: px per unit (2)} → {color: \"RRGGBB\", alpha: 0..255, x, y}: the colour drawn at a point of the slide (the Eyedropper)",
+            has_doc,
+            color_at
+        ),
         cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{}", has_doc, close),
         cmd!(
             "file.properties",
@@ -73,11 +82,18 @@ pub fn open_presentation(name: &str, bytes: &[u8]) -> Result<Presentation> {
         deckcraft_format::repair(&mut p);
         return Ok(p);
     }
+    if deckcraft_pptx::is_encrypted(bytes) {
+        return Err(EngineError::Other(format!("{name} is password-protected. DeckCraft can't open password-protected presentations yet.")));
+    }
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".txt") || lower.ends_with(".md") {
         let text = String::from_utf8_lossy(bytes);
         let mut p = defaults::blank_presentation(defaults::WIDE, Default::default(), false);
-        deckcraft_format::outline_to_slides(&mut p, &text);
+        if lower.ends_with(".md") {
+            deckcraft_format::markdown_to_slides(&mut p, &text);
+        } else {
+            deckcraft_format::outline_to_slides(&mut p, &text);
+        }
         if p.slides.is_empty() {
             p = defaults::new_presentation(None);
         }
@@ -117,10 +133,10 @@ fn open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"document": i, "missingFonts": s.doc()?.missing_fonts}))
 }
 
-/// Encode the presentation in `format` (`deckcraft`, `pptx`, `outline`).
+/// Encode the presentation in `format` (`deckcraft`, `pptx`, `potx`, `ppsx`, `outline`, `pdf`).
 pub fn save_bytes(doc: &Presentation, format: &str) -> Result<Vec<u8>> {
     match format {
-        "pptx" | "potx" | "ppsx" => deckcraft_pptx::export(doc).map_err(|e| EngineError::Other(e.to_string())),
+        f @ ("pptx" | "potx" | "ppsx") => deckcraft_pptx::export_as(doc, f).map_err(|e| EngineError::Other(e.to_string())),
         "outline" | "txt" => Ok(deckcraft_format::slides_to_outline(doc).into_bytes()),
         "pdf" => deckcraft_pdf::export(doc, &Default::default()).map_err(|e| EngineError::Other(e.to_string())),
         _ => deckcraft_format::save(doc).map_err(|e| EngineError::Other(e.to_string())),
@@ -182,10 +198,25 @@ pub fn pdf_bytes(doc: &Presentation, p: &Value) -> Result<Vec<u8>> {
     deckcraft_pdf::export(doc, &pdf_options(p, doc.slides.len())?).map_err(|e| EngineError::Other(e.to_string()))
 }
 
+/// The output extensions [`format_for_path`] maps to a writer of that format.
+pub const WRITABLE_EXTENSIONS: &[&str] = &["deckcraft", "pptx", "potx", "ppsx", "pdf", "png", "jpg", "jpeg", "txt", "md"];
+
+/// The format a file named `path` is written in, or `None` when its extension names no format
+/// DeckCraft writes (`.odp`, `.gif`, `.svg`, no extension …): [`format_for_path`] would save
+/// those as native `.deckcraft` bytes under the wrong name.
+pub fn writable_format_for_path(path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    WRITABLE_EXTENSIONS.contains(&ext.as_str()).then(|| format_for_path(path))
+}
+
 pub fn format_for_path(path: &str) -> &'static str {
     let l = path.to_ascii_lowercase();
-    if l.ends_with(".pptx") || l.ends_with(".potx") || l.ends_with(".ppsx") {
+    if l.ends_with(".pptx") {
         "pptx"
+    } else if l.ends_with(".potx") {
+        "potx"
+    } else if l.ends_with(".ppsx") {
+        "ppsx"
     } else if l.ends_with(".png") {
         "png"
     } else if l.ends_with(".jpg") || l.ends_with(".jpeg") {
@@ -269,6 +300,29 @@ fn render(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"png": base64_encode(&png), "width": w, "height": h}))
 }
 
+/// The colour the slide is drawn with at one point: what the Eyedropper takes.
+fn color_at(s: &mut Session, p: &Value) -> Result<Value> {
+    let st = s.doc()?;
+    let i = usize_param(p, "slide").unwrap_or(st.selection.slide);
+    if i >= st.doc.slides.len() {
+        return Err(bad("slide.colorAt", format!("no slide {i}")));
+    }
+    let coord = |key: &str| {
+        p.get(key)
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| bad("slide.colorAt", format!("`{key}` (a number, in slide units) is required")))
+    };
+    let (x, y) = (coord("x")?, coord("y")?);
+    let scale = f64_or(p, "scale", 2.0).clamp(0.01, 16.0);
+    let img = deckcraft_render::render_slide(&st.doc, i, &deckcraft_render::RenderOpts { scale, ..Default::default() });
+    let (px, py) = (x * scale, y * scale);
+    let inside = px >= 0.0 && py >= 0.0 && px < f64::from(img.width) && py < f64::from(img.height);
+    let [r, g, b, a] =
+        img.straight_at(px as u32, py as u32).filter(|_| inside).ok_or_else(|| bad("slide.colorAt", "the point is outside the slide"))?;
+    Ok(json!({"color": format!("{r:02X}{g:02X}{b:02X}"), "alpha": a, "x": x, "y": y}))
+}
+
 fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.export", "missing `path`"))?.to_string();
     let format = str_param(p, "format").unwrap_or(format_for_path(&path)).to_string();
@@ -310,11 +364,12 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
             write_file(&path, &bytes)?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
         }
-        other => {
-            let bytes = save_bytes(&st.doc, other)?;
+        "pptx" | "potx" | "ppsx" | "deckcraft" | "outline" | "txt" => {
+            let bytes = save_bytes(&st.doc, &format)?;
             write_file(&path, &bytes)?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
         }
+        other => Err(bad("file.export", format!("unknown format `{other}`"))),
     }
 }
 
@@ -430,3 +485,7 @@ fn recovery_discard(s: &mut Session, p: &Value) -> Result<Value> {
     }
     ok()
 }
+
+#[cfg(test)]
+#[path = "color_at_tests.rs"]
+mod color_at_tests;

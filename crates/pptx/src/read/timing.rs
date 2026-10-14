@@ -33,11 +33,11 @@ pub fn transition(imp: &mut Imp, part: &Part, t: &El) -> Option<Transition> {
         },
     }
     let default_dur = deckcraft_model::anim::TRANSITIONS.iter().find(|x| x.0 == tr.kind).map(|x| x.3).unwrap_or(1000);
+    // `spd` defaults to "fast" in the schema; PowerPoint omits both attributes for 0.5 s.
     tr.duration_ms = ms_attr(t, "dur").unwrap_or(match t.attr("spd") {
-        Some("fast") => 500,
         Some("med") => 750,
         Some("slow") => default_dur.max(1000),
-        _ => default_dur,
+        _ => 500,
     });
     if let Some(snd) = t.path(&["sndAc", "stSnd", "snd"]) {
         tr.sound = dml::media_ref(imp, part, snd);
@@ -119,6 +119,12 @@ pub fn animations(imp: &mut Imp, part: &Part, ctx: &IdCtx, timing: &El, _shapes:
         let Some(shape) = ctx.lookup(file_id) else { continue };
         let paragraph = tgt.path(&["txEl", "pRg"]).and_then(|p| p.u32("st"));
         let effect = maps::effect_for_preset(class, preset).unwrap_or_else(|| maps::fallback_effect(class));
+        // PowerPoint writes Float Down as its own preset (47), not as Float with a direction.
+        let (effect, option) = match (class, preset) {
+            (AnimClass::Entrance, 47) => ("float", "d".to_string()),
+            (AnimClass::Exit, 47) => ("floatOut", "d".to_string()),
+            _ => (effect, maps::option_from_subtype(effect, sub)),
+        };
         let start = match c.attr("nodeType") {
             Some("clickEffect") => AnimStart::OnClick,
             Some("afterEffect") => AnimStart::AfterPrevious,
@@ -128,7 +134,7 @@ pub fn animations(imp: &mut Imp, part: &Part, ctx: &IdCtx, timing: &El, _shapes:
             shape,
             class,
             effect: effect.to_string(),
-            option: maps::option_from_subtype(effect, sub),
+            option,
             start,
             duration_ms: max_dur(c, 0).unwrap_or(0),
             delay_ms: c.path(&["stCondLst", "cond"]).and_then(|d| ms_attr(d, "delay")).unwrap_or(0),
@@ -137,6 +143,8 @@ pub fn animations(imp: &mut Imp, part: &Part, ctx: &IdCtx, timing: &El, _shapes:
             preset_id: Some(preset),
             preset_subtype: Some(sub),
             auto_reverse: c.bool("autoRev").unwrap_or(false),
+            // PowerPoint's "Rewind when done playing" is `fill="remove"` on the effect node.
+            rewind: c.attr("fill") == Some("remove"),
             smooth_start: c.f64("accel").map(|v| v / 100_000.0).unwrap_or(0.0),
             smooth_end: c.f64("decel").map(|v| v / 100_000.0).unwrap_or(0.0),
             ..Default::default()

@@ -32,6 +32,7 @@ pub fn pointer_kind(k: &str) -> Option<PointerKind> {
         "move" => PointerKind::Move,
         "doubleclick" | "dblclick" => PointerKind::DoubleClick,
         "tripleclick" => PointerKind::TripleClick,
+        "contextclick" | "rightclick" => PointerKind::ContextClick,
         _ => return None,
     })
 }
@@ -84,7 +85,8 @@ impl Headless {
         let mut last = Value::Null;
         for e in events {
             let kind = s(e, "kind").unwrap_or("");
-            let kind = pointer_kind(kind).ok_or_else(|| format!("unknown pointer kind `{kind}` (down|drag|up|move|doubleclick)"))?;
+            let kind = pointer_kind(kind)
+                .ok_or_else(|| format!("unknown pointer kind `{kind}` (down|drag|up|move|doubleclick|tripleclick|contextclick)"))?;
             let x = e.get("x").and_then(Value::as_f64).ok_or("pointer event needs `x`")?;
             let y = e.get("y").and_then(Value::as_f64).ok_or("pointer event needs `y`")?;
             let mods = e.get("mods").map(mods_from).unwrap_or(base);

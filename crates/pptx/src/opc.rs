@@ -24,6 +24,8 @@ pub const NS_P14: &str = "http://schemas.microsoft.com/office/powerpoint/2010/ma
 pub const NS_P15: &str = "http://schemas.microsoft.com/office/powerpoint/2012/main";
 pub const NS_P159: &str = "http://schemas.microsoft.com/office/powerpoint/2015/09/main";
 pub const NS_A14: &str = "http://schemas.microsoft.com/office/drawing/2010/main";
+/// Modern (threaded) comments, Office 2018/8 schema.
+pub const NS_P188: &str = "http://schemas.microsoft.com/office/powerpoint/2018/8/main";
 
 pub const RT_BASE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
 pub const RT_MEDIA: &str = "http://schemas.microsoft.com/office/2007/relationships/media";

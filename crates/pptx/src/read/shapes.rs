@@ -429,14 +429,123 @@ fn smartart(imp: &mut Imp, part: &Part, gd: &El, frame: &Shape, depth: usize) ->
     if children.is_empty() {
         return None;
     }
+    let children = smartart_text_rects(imp, &mut sub, tree, children, depth + 1);
     let mut g = frame.clone();
     let x = frame.xfrm.unwrap_or_default();
     g.kind = ShapeKind::Group { children, child: Xfrm::new(0.0, 0.0, x.w, x.h) };
     Some(g)
 }
 
+/// A SmartArt drawing shape (`dsp:sp`) keeps its text rectangle in `dsp:txXfrm`, apart from the
+/// shape's own box: the text of a narrow shape turned by 90° is often laid out across it. Put each
+/// shape's text on that rectangle. `shapes` are what [`sp_tree`] read from `tree`, in order.
+fn smartart_text_rects(imp: &mut Imp, ctx: &mut IdCtx, tree: &El, shapes: Vec<Shape>, depth: usize) -> Vec<Shape> {
+    if depth > MAX_TREE_DEPTH {
+        return shapes;
+    }
+    let mut out = Vec::with_capacity(shapes.len());
+    let mut shapes = shapes.into_iter();
+    // The same elements `sp_tree` turns into shapes.
+    for e in tree.elements().filter(|e| matches!(e.local(), "sp" | "pic" | "grpSp" | "cxnSp" | "graphicFrame")) {
+        let Some(mut s) = shapes.next() else { break };
+        let mut text_box = None;
+        match (e.local(), &mut s.kind) {
+            ("grpSp", ShapeKind::Group { children, .. }) => {
+                let kids = std::mem::take(children);
+                *children = smartart_text_rects(imp, ctx, e, kids, depth + 1);
+            }
+            ("sp", ShapeKind::Shape) => {
+                if let Some(t) = e.child("txXfrm") {
+                    text_box = text_on_rect(imp, ctx, &mut s, dml::xfrm(t).0);
+                }
+            }
+            _ => {}
+        }
+        out.push(s);
+        out.extend(text_box);
+    }
+    out.extend(shapes);
+    out
+}
+
+/// Lay out the text of `s` on `t`, a text rectangle in the same space as the shape's box, turned by
+/// the shape's rotation plus its own. When that is the shape's text area shrunk by some margin, the
+/// shape keeps its text with wider insets. Otherwise (a rectangle reaching outside the shape, or
+/// turned against it) the text moves to a new frameless text shape over `s`, which is returned:
+/// both export as plain DrawingML that any reader lays out the same way.
+fn text_on_rect(imp: &mut Imp, ctx: &mut IdCtx, s: &mut Shape, t: Xfrm) -> Option<Shape> {
+    const EPS: f64 = 0.01;
+    let x = s.xfrm?;
+    if !x.is_finite() || !t.is_finite() || t.w <= EPS || t.h <= EPS {
+        return None;
+    }
+    let body = s.text.as_mut().filter(|b| !b.is_empty())?;
+    let turn = |a: f64| a.rem_euclid(360.0);
+    let upright = |a: f64| turn(a + EPS) < 2.0 * EPS;
+    let bp = &mut body.body;
+    if !x.flip_h
+        && !x.flip_v
+        && upright(t.rot)
+        && bp.rot.is_none_or(upright)
+        && bp.vert.is_none_or(|v| v == TextDir::Horizontal)
+        && bp.upright != Some(true)
+    {
+        // Same orientation as the shape: express the rectangle as insets from the shape's text area.
+        let c = x.affine().inverse() * t.center();
+        let (l, top) = (c.x - t.w / 2.0, c.y - t.h / 2.0);
+        let (r, b) = (l + t.w, top + t.h);
+        let area = text_area(&s.geom, x.w, x.h);
+        let extra = [l - area.x0, top - area.y0, area.x1 - r, area.y1 - b];
+        if extra.iter().all(|v| v.is_finite() && *v >= -EPS) {
+            let [el, et, er, eb] = extra.map(|v| v.max(0.0));
+            bp.inset_l = Some(bp.inset_l.unwrap_or(7.2) + el);
+            bp.inset_t = Some(bp.inset_t.unwrap_or(3.6) + et);
+            bp.inset_r = Some(bp.inset_r.unwrap_or(7.2) + er);
+            bp.inset_b = Some(bp.inset_b.unwrap_or(3.6) + eb);
+            return None;
+        }
+    }
+    if ctx.count >= MAX_SHAPES {
+        return None;
+    }
+    ctx.count += 1;
+    let text = s.text.take();
+    // No fill, outline or effects; the style keeps only the text colour and font.
+    let style = s.style.clone().map(|mut st| {
+        st.fill_ref.0 = 0;
+        st.line_ref.0 = 0;
+        st.effect_ref.0 = 0;
+        st
+    });
+    Some(Shape {
+        id: ctx.assign(imp, None),
+        name: s.name.clone(),
+        xfrm: Some(Xfrm { rot: turn(x.rot + t.rot), flip_h: false, flip_v: false, ..t }),
+        fill: Some(Fill::None),
+        line: Some(deckcraft_model::style::Line { fill: Some(Fill::None), ..Default::default() }),
+        style,
+        text,
+        click: s.click.clone(),
+        hover: s.hover.clone(),
+        ..Default::default()
+    })
+}
+
+/// Where a shape's geometry puts its text, in shape-local points (as the renderer computes it).
+fn text_area(geom: &Geom, w: f64, h: f64) -> deckcraft_geom::Rect {
+    let full = deckcraft_geom::Rect::new(0.0, 0.0, w, h);
+    match geom {
+        Geom::Preset { name, adj } => {
+            preset::build(name, w, h, adj).or_else(|| preset::build("rect", w, h, &[])).map(|g| g.text_rect).unwrap_or(full)
+        }
+        Geom::Custom { .. } => full,
+    }
+}
+
 fn table(imp: &mut Imp, part: &Part, tbl: &El) -> Table {
-    let mut t = Table { style: "none".into(), first_row: false, band_row: false, ..Default::default() };
+    // A table naming no style is drawn by PowerPoint with thin dark grid lines ("No Style, Table
+    // Grid"), not without lines.
+    let mut t = Table { style: "grid".into(), first_row: false, band_row: false, ..Default::default() };
     if let Some(pr) = tbl.child("tblPr") {
         t.background = pr.elements().find(|e| e.local().ends_with("Fill") && e.local() != "noFill").and_then(|f| dml::fill_el(imp, part, f));
         t.first_row = pr.bool("firstRow").unwrap_or(false);

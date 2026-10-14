@@ -148,6 +148,17 @@ fn body(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             });
             field(ui, d, "Width (in):", "w", &format!("{:.2}", cur.width / 72.0));
             field(ui, d, "Height (in):", "h", &format!("{:.2}", cur.height / 72.0));
+            let (w, h) = (num(d, "w", cur.width / 72.0), num(d, "h", cur.height / 72.0));
+            ui.horizontal(|ui| {
+                ui.label("Orientation:");
+                let portrait = ui.radio(h > w, "Portrait").clicked();
+                let landscape = ui.radio(w >= h, "Landscape").clicked();
+                // Picking the other orientation swaps the width and height fields.
+                if portrait && w > h || landscape && h > w {
+                    d.fields.insert("w".into(), format!("{h:.2}"));
+                    d.fields.insert("h".into(), format!("{w:.2}"));
+                }
+            });
             let maximize = check(ui, d, "Maximize content (else ensure fit)", "max", false);
             let (ok, cancel) = buttons(ui, "OK");
             if ok {

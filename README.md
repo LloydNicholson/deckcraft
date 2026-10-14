@@ -24,7 +24,7 @@
   <img alt="Status: early development" src="https://img.shields.io/badge/status-early%20development-f26b1d?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e?style=flat-square">
-  <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20·%20Windows%20·%20Linux%20·%20BSD%20·%20Web-555?style=flat-square">
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20BSD%20%C2%B7%20Web-555?style=flat-square">
 </p>
 
 <p align="center">
@@ -189,6 +189,10 @@ Remove-Item Env:WGPU_BACKEND                     # restore the default for later
 
 An explicit `gl` override can bring the driver crash back on affected systems. The macOS, Linux
 and web backend defaults are unchanged.
+
+DirectX 12 shaders are compiled with FXC, which is part of Windows, so no `dxcompiler.dll` or
+`dxil.dll` is needed ("Parent device is lost" at start, #153). `$env:WGPU_DX12_COMPILER = "dxc"`
+(or `"auto"`) selects wgpu's DXC handling again for troubleshooting.
 
 ### macOS
 

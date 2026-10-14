@@ -57,6 +57,16 @@ pub struct TriggerPlay {
     pub t: f64,
 }
 
+/// When a step of a triggered sequence was started, counted in started steps on the slide. Effects
+/// of different triggers apply in this order, so that a shape hidden by one trigger and shown again
+/// by another ends up as the later of the two left it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StepStamp {
+    pub trigger: ShapeId,
+    pub step: usize,
+    pub at: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 struct StepInfo {
     auto: bool,
@@ -379,6 +389,21 @@ impl Timeline {
 
     /// [`Timeline::state`] with the playheads of triggered sequences.
     pub fn state_with(&self, shape: ShapeId, para: Option<usize>, step: usize, t: f64, triggers: &[TriggerPlay]) -> AnimState {
+        self.state_ordered(shape, para, step, t, triggers, &[])
+    }
+
+    /// [`Timeline::state_with`] applying the effects of triggered sequences in the order their steps
+    /// were started (`stamps`), after those of the main sequence. Without stamps they apply in
+    /// Animation Pane order.
+    pub fn state_ordered(
+        &self,
+        shape: ShapeId,
+        para: Option<usize>,
+        step: usize,
+        t: f64,
+        triggers: &[TriggerPlay],
+        stamps: &[StepStamp],
+    ) -> AnimState {
         let para = para.map(|p| self.groups.iter().find(|g| g.0 == shape && g.1 == p).map(|g| g.2).unwrap_or(p));
         let mine = self.effects.iter().filter(|e| e.timing.shape == shape && e.timing.paragraph == para);
         let base_color = self.colors.iter().find(|(s, _)| *s == shape).map(|(_, c)| *c).unwrap_or(Rgba::rgb(0x15, 0x60, 0x82));
@@ -391,7 +416,16 @@ impl Timeline {
         {
             st.visible = false;
         }
-        // Then play in time order: main sequence first, then triggered sequences.
+        // Then play in time order: main sequence first, then triggered sequences as they were clicked.
+        if !stamps.is_empty() {
+            let when = |e: &Effect| match e.timing.sequence {
+                Sequence::Main => 0,
+                Sequence::Trigger(tr) => {
+                    stamps.iter().find(|s| s.trigger == tr && s.step == e.timing.step).map_or(u64::MAX, |s| s.at.saturating_add(1))
+                }
+            };
+            ordered.sort_by_key(|e| (when(e), e.timing.anim));
+        }
         for e in &ordered {
             let (pstep, pt) = match e.timing.sequence {
                 Sequence::Main => (step, t),
@@ -471,7 +505,8 @@ fn build_spec(a: &Animation, xf: Xfrm, sw: f64, sh: f64, resolve: &dyn Fn(&deckc
     EffectSpec {
         class: a.class,
         effect,
-        option: a.option.clone(),
+        // Sink Down is Rise Up played backwards, leaving downward.
+        option: if a.effect == "sinkDown" { "d".into() } else { a.option.clone() },
         accel: a.smooth_start,
         decel: a.smooth_end,
         bounce: a.bounce_end,

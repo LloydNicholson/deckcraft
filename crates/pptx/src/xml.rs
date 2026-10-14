@@ -340,8 +340,10 @@ fn start_el(b: &quick_xml::events::BytesStart, reader: &quick_xml::Reader<&[u8]>
     let mut attrs = vec![];
     for a in b.attributes().with_checks(false).flatten() {
         let k = String::from_utf8_lossy(a.key.as_ref()).into_owned();
-        let v =
-            a.decode_and_unescape_value(reader.decoder()).map(|c| c.into_owned()).unwrap_or_else(|_| String::from_utf8_lossy(&a.value).into_owned());
+        let v = a
+            .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, reader.decoder())
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| String::from_utf8_lossy(&a.value).into_owned());
         attrs.push((k, v));
     }
     El { name, attrs, children: vec![] }

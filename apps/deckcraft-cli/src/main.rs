@@ -3,6 +3,7 @@
 //! ```text
 //! deckcraft-cli info FILE                       # slides, titles, layouts (JSON)
 //! deckcraft-cli render (FILE | --sample) [--slide N | --all] [--scale S] OUT.png|OUT_DIR
+//! deckcraft-cli render-transition FILE --slide N --t T[,T…] [--width PX] OUT.png   # transition frame(s)
 //! deckcraft-cli convert IN OUT                  # .deckcraft ⇄ .pptx, outline .txt, .png (first slide)
 //! deckcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--save OUT] [--export OUT] [--print]
 //! deckcraft-cli commands [FILTER]               # list commands (JSON)
@@ -34,6 +35,7 @@ macro_rules! outln {
 
 const USAGE: &str = "usage: deckcraft-cli info FILE
        deckcraft-cli render (FILE | --sample) [--slide N | --all] [--scale S] [--edit] OUT
+       deckcraft-cli render-transition FILE --slide N --t T[,T...] [--width PX] OUT.png
        deckcraft-cli convert IN OUT
        deckcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--save OUT] [--export OUT] [--print]
        deckcraft-cli commands [FILTER]
@@ -52,8 +54,17 @@ fn main() -> ExitCode {
         }
         Some("info") => report(info(rest)),
         Some("render") => report(render(rest)),
+        Some("render-transition") => report(render_transition(rest)),
         Some("convert") => report(convert(rest)),
         Some("run") => report(run(rest)),
+        Some("--help" | "-h" | "help") => {
+            outln!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        Some("commands") if rest.first().is_some_and(|a| is_help(a)) => {
+            outln!("{USAGE}");
+            ExitCode::SUCCESS
+        }
         Some("commands") => {
             let s = Session::new();
             let f = rest.first().map(|x| x.to_lowercase());
@@ -82,6 +93,10 @@ fn main() -> ExitCode {
     }
 }
 
+fn is_help(arg: &str) -> bool {
+    matches!(arg, "--help" | "-h")
+}
+
 fn report(r: Result<(), String>) -> ExitCode {
     match r {
         Ok(()) => ExitCode::SUCCESS,
@@ -103,6 +118,10 @@ fn open(s: &mut Session, input: Option<&str>, sample: bool) -> Result<(), String
 }
 
 fn info(args: &[String]) -> Result<(), String> {
+    if args.first().is_some_and(|a| is_help(a)) {
+        outln!("{USAGE}");
+        return Ok(());
+    }
     let path = args.first().ok_or("info needs a FILE")?;
     let mut s = Session::new();
     open(&mut s, Some(path), false)?;
@@ -127,6 +146,11 @@ fn render(args: &[String]) -> Result<(), String> {
             "--all" => all = true,
             "--edit" => edit = true,
             "--scale" => scale = it.next().and_then(|v| v.parse().ok()).ok_or("--scale needs a number")?,
+            "--help" | "-h" => {
+                outln!("{USAGE}");
+                return Ok(());
+            }
+            other if other.starts_with('-') => return Err(format!("unknown option `{other}`")),
             other
                 if input.is_none()
                     && !sample
@@ -161,11 +185,89 @@ fn render(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Frames of slide N's transition (0-based N; from slide N-1, or black for the first slide) at
+/// the given progress values. With several values, OUT gets `-t<value>` before its extension.
+fn render_transition(args: &[String]) -> Result<(), String> {
+    use deckcraft_engine::render;
+    let mut input = None;
+    let mut slide: Option<usize> = None;
+    let mut ts: Vec<f64> = Vec::new();
+    let mut width: Option<f64> = None;
+    let mut out = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--slide" => slide = Some(it.next().and_then(|v| v.parse().ok()).ok_or("--slide needs a number")?),
+            "--t" => {
+                let v = it.next().ok_or("--t needs a value")?;
+                for x in v.split(',') {
+                    let t: f64 = x.trim().parse().map_err(|_| format!("bad --t value `{x}`"))?;
+                    if !t.is_finite() {
+                        return Err(format!("bad --t value `{x}`"));
+                    }
+                    ts.push(t);
+                }
+            }
+            "--width" => {
+                width = Some(it.next().and_then(|v| v.parse().ok()).filter(|w: &f64| w.is_finite() && *w >= 1.0).ok_or("--width needs pixels")?)
+            }
+            other if input.is_none() => input = Some(other.to_string()),
+            other => out = Some(other.to_string()),
+        }
+    }
+    let input = input.ok_or("render-transition needs a FILE")?;
+    let out = out.ok_or("render-transition needs an output path")?;
+    let i = slide.ok_or("render-transition needs --slide N")?;
+    if ts.is_empty() {
+        return Err("render-transition needs --t".into());
+    }
+    let mut s = Session::new();
+    open(&mut s, Some(&input), false)?;
+    let st = s.doc().map_err(|e| e.to_string())?;
+    let doc = &st.doc;
+    let n = doc.slides.len();
+    let Some(sl) = doc.slides.get(i) else { return Err(format!("no slide {i} (the deck has {n})")) };
+    let sw = doc.slide_size.width.max(1.0);
+    let w = width.unwrap_or(sw * 2.0).min(render::MAX_SIDE as f64);
+    let opts = render::RenderOpts { scale: w / sw, ..Default::default() };
+    let tr = sl.transition.clone().unwrap_or_default();
+    // Render both slides once and composite every frame from them (morph re-renders per frame).
+    let prev = i.checked_sub(1);
+    let cached = (tr.kind != "morph").then(|| {
+        let parts = render::uses_slide_parts(&tr.kind, &tr.option).then(|| render::SlideParts::render(doc, prev, i, &opts));
+        (prev.map(|p| render::render_slide(doc, p, &opts)), render::render_slide(doc, i, &opts), parts)
+    });
+    let aspect = sw / doc.slide_size.height.max(1.0);
+    for t in &ts {
+        let img = match &cached {
+            Some((old, new, parts)) => {
+                render::composite_transition(old.as_ref(), new, parts.as_ref(), &render::transition_frame(&tr.kind, &tr.option, *t, aspect))
+            }
+            None => render::render_transition(doc, i, *t, &opts),
+        };
+        let path = if ts.len() == 1 {
+            out.clone()
+        } else {
+            let p = std::path::Path::new(&out);
+            let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("frame");
+            let name = format!("{stem}-t{t:.3}.png");
+            p.with_file_name(name).to_string_lossy().into_owned()
+        };
+        std::fs::write(&path, img.to_png()).map_err(|e| format!("{path}: {e}"))?;
+        outln!("{path} ({}×{}) {} {} t={t}", img.width, img.height, tr.kind, tr.option);
+    }
+    Ok(())
+}
+
 fn convert(args: &[String]) -> Result<(), String> {
+    if args.first().is_some_and(|a| is_help(a)) {
+        outln!("{USAGE}");
+        return Ok(());
+    }
     let (Some(input), Some(out)) = (args.first(), args.get(1)) else { return Err("convert needs IN and OUT".into()) };
+    let fmt = output_format(out)?;
     let mut s = Session::new();
     open(&mut s, Some(input), false)?;
-    let fmt = deckcraft_engine::cmd::file::format_for_path(out);
     let r = if matches!(fmt, "png" | "jpeg") {
         s.execute("file.export", &json!({"path": out, "slide": 0}))
     } else {
@@ -174,6 +276,16 @@ fn convert(args: &[String]) -> Result<(), String> {
     r.map_err(|e| e.to_string())?;
     outln!("{out}");
     Ok(())
+}
+
+/// The format `convert`, `run --save` and `run --export` write to `path`, or an error naming the
+/// supported extensions when `path`'s extension isn't one (rather than native bytes under that name).
+fn output_format(path: &str) -> Result<&'static str, String> {
+    use deckcraft_engine::cmd::file::{WRITABLE_EXTENSIONS, writable_format_for_path};
+    writable_format_for_path(path).ok_or_else(|| {
+        let ext = std::path::Path::new(path).extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_else(|| "(none)".into());
+        format!("{path}: unsupported output format {ext} (supported: .{})", WRITABLE_EXTENSIONS.join(", ."))
+    })
 }
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -192,8 +304,15 @@ fn run(args: &[String]) -> Result<(), String> {
             "--save" => save = Some(it.next().cloned().ok_or("--save needs a path")?),
             "--export" => export = Some(it.next().cloned().ok_or("--export needs a path")?),
             "--print" => print = true,
+            "--help" | "-h" => {
+                outln!("{USAGE}");
+                return Ok(());
+            }
             other => return Err(format!("unknown option `{other}`")),
         }
+    }
+    for p in save.iter().chain(&export) {
+        output_format(p)?;
     }
     let mut s = Session::new();
     open(&mut s, input.as_deref(), sample)?;
@@ -217,6 +336,10 @@ fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn describe(id: Option<&str>) -> Result<(), String> {
+    if id.is_some_and(is_help) {
+        outln!("{USAGE}");
+        return Ok(());
+    }
     let id = id.ok_or("describe needs a command id")?;
     let c = deckcraft_engine::find_command(id).ok_or_else(|| format!("unknown command `{id}`"))?;
     outln!("{}  —  {}\n  where:    {}\n  shortcut: {}\n  params:   {}", c.id, c.label, c.menu.join(" ▸ "), c.shortcut.unwrap_or("—"), c.params);
@@ -233,6 +356,10 @@ fn app(args: &[String]) -> Result<(), String> {
         match a.as_str() {
             "--port" => port = it.next().cloned().ok_or("--port needs a value")?,
             "--method" => method = Some(it.next().cloned().ok_or("--method needs a name")?),
+            "--help" | "-h" => {
+                outln!("{USAGE}");
+                return Ok(());
+            }
             other => rest.push(other.to_string()),
         }
     }
@@ -261,6 +388,10 @@ fn mcp(args: &[String]) -> Result<(), String> {
         match a.as_str() {
             "--connect" => connect = Some(it.next().cloned().ok_or("--connect needs a port or host:port")?),
             "--sample" => sample = true,
+            "--help" | "-h" => {
+                outln!("{USAGE}");
+                return Ok(());
+            }
             other => return Err(format!("unknown mcp option `{other}`")),
         }
     }
@@ -277,4 +408,36 @@ fn mcp(args: &[String]) -> Result<(), String> {
     let mut server = Server::new(backend);
     let stdin = std::io::stdin();
     server.serve(stdin.lock(), std::io::stdout()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn render_help_prints_usage_and_writes_nothing() {
+        assert!(render(&args(&["--help"])).is_ok());
+        assert!(render(&args(&["-h"])).is_ok());
+        assert!(!std::path::Path::new("--help").exists());
+    }
+
+    #[test]
+    fn render_rejects_unknown_flag() {
+        let err = render(&args(&["--sample", "--scael", "2", "out.png"])).unwrap_err();
+        assert_eq!(err, "unknown option `--scael`");
+        assert!(!std::path::Path::new("--scael").exists());
+    }
+
+    #[test]
+    fn other_subcommands_accept_help() {
+        assert!(info(&args(&["--help"])).is_ok());
+        assert!(convert(&args(&["-h"])).is_ok());
+        assert!(run(&args(&["--help"])).is_ok());
+        assert!(describe(Some("--help")).is_ok());
+        assert!(mcp(&args(&["-h"])).is_ok());
+    }
 }

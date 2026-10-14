@@ -129,7 +129,7 @@ fn order_list(list: &mut Vec<Shape>, ids: &[ShapeId], how: i32) {
 /// Move one shape to `index` among its siblings (0 = back): the Selection pane's drag and drop.
 /// A shape stays in the list that holds it, so a group's child stays in its group.
 fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = id_param(p, "id").ok_or_else(|| bad("arrange.reorder", "missing `id`"))?;
+    let id = id_param(p, "id", "arrange.reorder")?.ok_or_else(|| bad("arrange.reorder", "missing `id`"))?;
     let to = usize_param(p, "index").ok_or_else(|| bad("arrange.reorder", "missing `index`"))?;
     let st = s.doc()?;
     let siblings: &[Shape] = match deckcraft_model::parent_of(st.shapes(), id) {

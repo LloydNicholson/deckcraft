@@ -1,6 +1,7 @@
 # Where DeckCraft falls short of PowerPoint
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (IME composition and CJK interface text landed, #101; previous: minor, core-workflow alpha gate added; stage stays alpha; before that: major, first itemized gap list; full re-measure against PowerPoint for Mac 16.113.4 and the open GitHub issues) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (interactive-deck clicks in the slide show; previous: minor (3-D bevel, camera and face lighting rendered; previous: minor, IME composition and CJK interface text landed, #101; previous: minor, core-workflow alpha gate added; stage stays alpha; before that: major, first itemized gap list; full re-measure against PowerPoint for Mac 16.113.4 and the open GitHub issues)) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (gap 3 shrinks to media options and rewind: comment threads round-trip now, #70; 3-D bevel, camera and face lighting rendered; previous: minor, IME composition and CJK interface text landed, #101; previous: minor, core-workflow alpha gate added; stage stays alpha; before that: major, first itemized gap list; full re-measure against PowerPoint for Mac 16.113.4 and the open GitHub issues) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
 
 Every known shortfall, one entry each, ranked by how much it stops someone who presents with
 PowerPoint from switching. This is the work list: pick from the top. Numbers are summarized in
@@ -19,7 +20,7 @@ revision history.
 |---|---|---|:-:|---|---|
 | 1 | PPTX never tested against a corpus of real decks | File format | B | 20–35 | [file-format-parity.md](file-format-parity.md) |
 | 2 | Data loss and crashes on common paths (#60, #40, #59) | Stability | B | 6–12 | this file |
-| 3 | PPTX round trip drops comment threads, media options, rewind (#70, #74, #77) | File format | B | 3–6 | [file-format-parity.md](file-format-parity.md) |
+| 3 | PPTX round trip drops media options and rewind (#74, #77) | File format | B | 2–4 | [file-format-parity.md](file-format-parity.md) |
 | 4 | SVG pictures don't render (EMF/WMF do) | File format | B | 6–12 | [file-format-parity.md](file-format-parity.md) |
 | 5 | No localization: English only | Localization | B (infra + 5 languages) | 55–90 | [localization-parity.md](localization-parity.md) |
 | 6 | No printing | Feature | B | 5–8 | [file-format-parity.md](file-format-parity.md) |
@@ -68,12 +69,12 @@ Detail in [file-format-parity.md](file-format-parity.md).
   `standards/test-corpora.md`), add import → render → export → re-import checks, have the owner open
   outputs in PowerPoint, fix what breaks. **Beta blocker.**
 
-### Round trip loses comment threads, media playback options and animation rewind (#70, #74, #77)
-- **Evidence:** issues filed 2026-10-10 by an automated reviewer; the writer emits legacy comments
-  only (no `p188` modern comments with replies and resolved state, though the reader understands
-  them); media playback options and the animation rewind flag aren't written back.
-- **Impact:** a deck opened and saved silently loses review state and show behaviour.
-- **Estimate:** 3–6 h. **Beta blocker.**
+### Round trip loses media playback options and animation rewind (#74, #77)
+- **Evidence:** issues filed 2026-10-10 by an automated reviewer; media playback options and the
+  animation rewind flag aren't written back. Comment threads left with #70: the writer now emits
+  the `p188` modern part next to the legacy one.
+- **Impact:** a deck opened and saved silently loses show behaviour.
+- **Estimate:** 2–4 h. **Beta blocker.**
 
 ### SVG pictures don't render
 - **Evidence:** `crates/render/src/images.rs` decodes through `image` 0.25 (PNG, JPEG, WebP, GIF,
@@ -159,6 +160,20 @@ Detail in [file-format-parity.md](file-format-parity.md).
 ### Animation Pane, effect count and preview
 Detail in [animation-parity.md](animation-parity.md). 10–16 h; the pane is a **beta blocker**.
 
+### Interactive decks: media-action links, audio-triggered effects and click boxes
+- **Evidence:** the slide show plays click-triggered animations, keeps each slide's state across
+  visits and ignores shapes an animation has hidden (`crates/anim/src/interact.rs`). Still open,
+  found by running three classroom game decks (Jeopardy-style boards, hide-and-reveal, score
+  counters): a click on a shape whose action is "play sound" (`ppaction://media`, 126 and 486
+  shapes in two decks) does nothing; triggers that start on `onStopAudio` or `begin` conditions are
+  not read as triggers; click boxes are the shape's bounding box (a hexagon's corners count) and do
+  not follow a shape that a motion path has moved; the PPTX writer turns every "on click" after the
+  first effect of a trigger into "after previous", so a trigger with several click steps saved from
+  DeckCraft plays all of them at once.
+- **Impact:** games built around sound effects on buttons, or around a button that counts up with
+  repeated clicks, lose that part when they are saved from DeckCraft or played in it.
+- **Estimate:** 4–8 h.
+
 ### Notes and Handout masters
 - **Evidence:** checklist row missing; PPTX writes a notes master but there's no view to edit it,
   and no handout master at all.
@@ -168,10 +183,11 @@ Detail in [animation-parity.md](animation-parity.md). 10–16 h; the pane is a *
 - **Evidence:** checklist rows "Edit points" (P1 missing), "Text warp transforms" (partial: all 40
   `prstTxWarp` presets render and their adjusts round-trip, but there is no Transform gallery or
   command to apply one, no adjust handles, and arc/circle placement can differ from PowerPoint by
-  1–3 % of the path length), "Bevel and 3-D rotation" (missing; `scene3d`/`sp3d` kept as raw XML on
-  round trip).
-- **Estimate:** 4–6 h (edit points), 2–4 h (warp gallery, command and handles), 8–12 h (3-D render
-  approximation).
+  1–3 % of the path length), "Bevel and 3-D rotation" (partial: bevels, camera presets and rotations and face lighting
+  render as approximations and `scene3d`/`sp3d` round-trip as raw XML; no extrusion or side faces,
+  only the three-point rig, and no command or pane to apply 3-D).
+- **Estimate:** 4–6 h (edit points), 2–4 h (warp gallery, command and handles), 6–10 h (3-D extrusion,
+  rigs and materials, Format Shape page).
 
 ### Proofing: spelling, thesaurus, AutoCorrect
 - **Evidence:** `review.spelling` checks a small built-in list of frequent misspellings
@@ -255,6 +271,8 @@ Detail in [localization-parity.md](localization-parity.md).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | Shape, picture and table rendering checked against PowerPoint on ~150 synthetic edge-case slides; 3-D bevels, cameras and face lighting now render approximately (gap narrowed to extrusion, rigs and the 3-D pane) |
+| 2026-10-13 | minor | Interactive decks: triggers, return-to-slide state and click rules landed in the slide show; the remaining pieces are one new entry under Features |
 | 2026-10-12 | minor | IME composition in slide text and notes, and CJK interface text with real glyphs (#101): the IME gap is now Korean on the web and table-cell underlines |
 | 2026-10-12 | minor | EMF/WMF text, pattern and hatch brushes drawn; legacy OLE and ActiveX previews shown; the SVG gap keeps only EMF clip regions |
 | 2026-10-12 | minor | Text warps render (all 40 presets, adjusts round-trip); the warp gap is now the gallery, command and handles |

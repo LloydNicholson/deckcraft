@@ -347,6 +347,44 @@ fn info_shows_and_edits_the_properties() {
     assert!(h.state().backstage_open());
 }
 
+/// Leaving a property field with a click on another field keeps what was typed.
+#[test]
+fn info_keeps_a_property_draft_when_another_field_is_clicked() {
+    let mut h = harness(new_app());
+    h.state_mut().run("app.backstage", json!({"page": "info"})).unwrap();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, "Author").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::TextInput, "Author").type_text("Ada");
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::TextInput, "Title").click();
+    h.run_steps(4);
+    assert_eq!(h.state().session.active().unwrap().doc.props.author, "Ada");
+}
+
+/// Save straight from a property field saves what was typed (the side menu acts before the field
+/// is drawn again).
+#[test]
+fn info_saves_a_property_draft_when_save_is_clicked() {
+    let dir = temp_dir("info-save");
+    let path = dir.join("Draft.pptx").to_string_lossy().to_string();
+    let mut s = Session::with_new();
+    s.execute("file.saveAs", &json!({"path": path})).unwrap();
+    let mut h = harness(SlideApp::new(s, Services::default()));
+    h.state_mut().run("app.backstage", json!({"page": "info"})).unwrap();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, "Author").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::TextInput, "Author").type_text("Ada");
+    h.run_steps(2);
+    click_nav(&h, "Save");
+    h.run_steps(3);
+    let doc = h.state().session.active().unwrap();
+    assert_eq!(doc.doc.props.author, "Ada");
+    assert!(!doc.is_dirty(), "the author went into the saved file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// With nothing open the File tab is the start screen: Home, New and Open, no back arrow, and Esc
 /// has nowhere to go.
 #[test]
@@ -366,6 +404,25 @@ fn the_start_screen_is_file_home() {
     h.run_steps(3);
     assert_eq!(h.state().session.documents().len(), 1);
     assert!(h.state().backstage.is_none());
+}
+
+/// #346: a file picked in Open that can't be read used to drop back to the start screen without
+/// a word. The reason now shows over the start screen.
+#[test]
+fn a_file_that_cant_be_opened_says_why() {
+    let dir = temp_dir("unreadable");
+    let path = dir.join("Notes.pptx");
+    std::fs::write(&path, b"not a presentation").unwrap();
+    let picked = path.to_string_lossy().to_string();
+    let services = Services { pick_open: Some(Box::new(move |_: &str| Some(picked.clone()))), ..Default::default() };
+    let mut h = harness(SlideApp::new(Session::new(), services));
+    h.state_mut().run("app.backstage", json!({"page": "open"})).unwrap();
+    h.run_steps(2);
+    h.get_by_label("Browse").click();
+    h.run_steps(3);
+    assert!(h.state().session.documents().is_empty());
+    assert!(h.query_by_label_contains("not a presentation DeckCraft can read").is_some(), "the error is on screen");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Print previews the pages its settings make and prints through a PDF opened in the system

@@ -141,10 +141,15 @@ mod tests {
     #[test]
     fn emoji_clusters_are_recognised() {
         let c = |s: &str| s.chars().collect::<Vec<char>>();
-        for yes in ["😀", "👍🏽", "❤\u{FE0F}", "👨\u{200D}👩\u{200D}👧", "🇯🇵", "1\u{FE0F}\u{20E3}", "🏳\u{FE0F}\u{200D}🌈"] {
+        // As PowerPoint draws them: emoji-presentation characters (⭐ ✅ ☔ ⌚ ⏩) in colour even
+        // without a selector, text-presentation ones (♥ ✔ ☎ ⬆ ▶) as text unless U+FE0F asks, and
+        // keycaps always as text.
+        for yes in ["😀", "👍🏽", "❤\u{FE0F}", "👨\u{200D}👩\u{200D}👧", "🇯🇵", "🏳\u{FE0F}\u{200D}🌈", "⭐", "✅", "☔", "⌚", "⏩", "🀄"]
+        {
             assert!(is_emoji_cluster(&c(yes)), "{yes:?}");
         }
-        for no in ["a", "1", "❤", "☺\u{FE0E}", "😀\u{FE0E}", "字", "→"] {
+        for no in ["a", "1", "❤", "☺\u{FE0E}", "😀\u{FE0E}", "字", "→", "♥", "✔", "☎", "⬆", "▶", "1\u{FE0F}\u{20E3}", "#\u{20E3}"]
+        {
             assert!(!is_emoji_cluster(&c(no)), "{no:?}");
         }
     }
@@ -185,6 +190,34 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_lookups_all_find_an_installed_family() {
+        // Threads resolving an installed family nobody had loaded yet used to fall back to
+        // another face when a different thread finished loading it first, so the same text was
+        // laid out in different fonts depending on timing.
+        let dir = std::env::temp_dir().join(format!("deckcraft-fonts-concurrent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Hack-Regular.ttf"), epaint_default_fonts::HACK_REGULAR).unwrap();
+        for _ in 0..20 {
+            let db = FontDb::with_font_dirs(vec![dir.clone()]);
+            db.set_system_fallback(false);
+            let start = std::sync::Barrier::new(8);
+            let got: Vec<String> = std::thread::scope(|s| {
+                let threads: Vec<_> = (0..8)
+                    .map(|_| {
+                        s.spawn(|| {
+                            start.wait();
+                            db.face("Hack", "Regular").family.clone()
+                        })
+                    })
+                    .collect();
+                threads.into_iter().map(|t| t.join().unwrap()).collect()
+            });
+            assert!(got.iter().all(|f| f == "Hack"), "{got:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn windows_family_names_find_their_faces() {
         // Documents name fonts by their Windows family ("Segoe UI Semibold"); the font's
         // typographic family is "Segoe UI" with a "Semibold" style. The fixture is named the same way.
@@ -217,6 +250,36 @@ mod tests {
             assert_eq!(db.face("DeckCraft Legacy Semibold", "Regular").style, "Semibold");
             let regular = db.face("DeckCraft Legacy", "Regular");
             assert_eq!((regular.style.as_str(), regular.weight), ("Regular", 400.0));
+        }
+    }
+
+    #[test]
+    fn faces_without_outlines_are_not_cataloged() {
+        // Rename the Semibold's `glyf` table, as in fonts whose glyphs are bitmaps or are stored in
+        // Apple's `hvgl` table. The face still maps "A", but its outline is empty. The new tag
+        // keeps the table directory sorted.
+        let mut semibold = include_bytes!("../tests/fixtures/legacy-semibold.ttf").to_vec();
+        let tables = u16::from_be_bytes([semibold[4], semibold[5]]) as usize;
+        let glyf = (0..tables).map(|i| 12 + 16 * i).find(|&r| &semibold[r..r + 4] == b"glyf").unwrap();
+        semibold[glyf..glyf + 4].copy_from_slice(b"gxyz");
+        let loaded = FontDb::with_font_dirs(Vec::new());
+        assert_eq!(loaded.add_font(semibold.clone()), 1);
+        let face = loaded.face("DeckCraft Legacy", "Semibold");
+        assert!(face.covers('A'));
+        assert!(loaded.outline(&face, face.glyph_for('A')).elements().is_empty());
+        // The system font scan lists the Regular, which has outlines, and leaves out the Semibold
+        // under both of its names.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dir = std::env::temp_dir().join(format!("deckcraft-fonts-outlines-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("legacy-semibold.ttf"), &semibold).unwrap();
+            std::fs::write(dir.join("legacy-regular.ttf"), include_bytes!("../tests/fixtures/legacy-regular.ttf")).unwrap();
+            let db = FontDb::with_font_dirs(vec![dir.clone()]);
+            db.set_system_fallback(false);
+            assert_eq!(db.styles("DeckCraft Legacy"), ["Regular"]);
+            assert!(!db.has_family("DeckCraft Legacy Semibold"));
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 

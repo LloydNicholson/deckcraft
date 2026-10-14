@@ -452,7 +452,23 @@ impl Session {
         self.depth += 1;
         let r = (spec.run)(self, params);
         self.depth -= 1;
-        let r = r?;
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                // A command made of several edits can fail after some of them went through; the
+                // outermost one puts the presentation back, so a failed command changes nothing.
+                if outer
+                    && let (Some((uid, old, sel)), Some(st)) = (before, self.active_mut())
+                    && st.uid == uid
+                    && !Arc::ptr_eq(&old, &st.doc)
+                {
+                    st.doc = old;
+                    st.selection = sel;
+                    st.revision += 1;
+                }
+                return Err(e);
+            }
+        };
         if let Some(st) = self.active_mut() {
             clamp_selection(st);
         }
@@ -509,9 +525,15 @@ impl Session {
         if let Some(t) = st.selection.text.as_mut() {
             t.line_end = None;
         }
+        let owner = |sel: &Selection| sel.text.as_ref().map(|t| (sel.slide, sel.target, t.shape, t.cell, t.notes));
+        let before = owner(&st.selection);
         f(&doc, &mut st.selection);
         clamp_selection(st);
         st.revision += 1;
+        // A composition belongs to the text body it began in: leaving that body settles it.
+        if st.composition.is_some() && owner(&st.selection) != before {
+            self.end_composition();
+        }
         Ok(())
     }
 }

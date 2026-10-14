@@ -93,6 +93,7 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
         return;
     };
     let x = deckcraft_engine::cmd::xfrm_of(&st.doc, &st.selection, &sh);
+    let uid = st.uid;
     // Tabs as icons.
     ui.horizontal(|ui| {
         for (tab, icon, tip) in [
@@ -173,13 +174,14 @@ fn format_shape(app: &mut SlideApp, ui: &mut Ui) {
             fields(ui, "Vertical", "fy", x.y, "y", "shape.move", 72.0);
             ui.add_space(6.0);
             ui.label(egui::RichText::new("Alt Text").font(theme::bold(13.0)));
-            let id = ui.id().with(("alt", sh.id.0));
-            let mut alt: String = ui.data_mut(|d| d.get_temp(id).unwrap_or_else(|| sh.descr.clone()));
+            let id = ui.id().with(("alt", uid, sh.id.0));
+            let stored: Option<(String, String)> = ui.data_mut(|d| d.get_temp(id));
+            let mut alt = widgets::text_draft(stored, &sh.descr);
             let r = ui.add(egui::TextEdit::multiline(&mut alt).desired_rows(3).desired_width(f32::INFINITY));
             if r.lost_focus() && alt != sh.descr {
                 run(app, "shape.altText", json!({"text": alt}));
             }
-            ui.data_mut(|d| d.insert_temp(id, alt));
+            ui.data_mut(|d| d.insert_temp(id, (sh.descr.clone(), alt)));
         }
         "text" => {
             ui.label(egui::RichText::new("Text Box").font(theme::bold(13.0)));

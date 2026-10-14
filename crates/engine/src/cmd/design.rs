@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Slide Size",
             ["Design", "Customize"],
             None,
-            "{preset?: widescreen|standard|… | w, h: pt, scale?: maximize|ensureFit|none}",
+            "{preset?: widescreen|standard|… | w, h: pt, orientation?: portrait|landscape, scale?: maximize|ensureFit|none}",
             has_doc,
             slide_size
         ),
@@ -250,6 +250,12 @@ fn slide_size(s: &mut Session, p: &Value) -> Result<Value> {
             f64_param(p, "w").ok_or_else(|| bad("design.slideSize", "missing `w`"))?.clamp(72.0, 4032.0),
             f64_param(p, "h").ok_or_else(|| bad("design.slideSize", "missing `h`"))?.clamp(72.0, 4032.0),
         )
+    };
+    let size = match str_param(p, "orientation") {
+        Some("portrait") if size.width > size.height => Size::new(size.height, size.width),
+        Some("landscape") if size.height > size.width => Size::new(size.height, size.width),
+        Some("portrait" | "landscape") | None => size,
+        Some(o) => return Err(bad("design.slideSize", format!("unknown orientation `{o}`"))),
     };
     let mode = str_param(p, "scale").unwrap_or("ensureFit").to_string();
     s.edit(|doc, _| {

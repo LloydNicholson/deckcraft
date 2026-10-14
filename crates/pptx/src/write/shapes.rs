@@ -100,7 +100,10 @@ pub fn geometry(w: &mut W, g: &Geom) {
                     vals.push(defaults.get(vals.len()).copied().unwrap_or(0.0));
                 }
                 w.open0("a:avLst");
-                let single = if defaults.is_empty() { vals.len() == 1 } else { defaults.len() == 1 };
+                // A lone guide is `adj`, except in these presets, which name it `adj1` (as PowerPoint
+                // writes them); PowerPoint won't open a file that renames it (#214).
+                let adj1 = matches!(name, "bentConnector3" | "curvedConnector3" | "frame" | "mathPlus" | "mathMinus" | "mathMultiply");
+                let single = !adj1 && if defaults.is_empty() { vals.len() == 1 } else { defaults.len() == 1 };
                 for (i, v) in vals.iter().enumerate() {
                     let n = if single && i == 0 { "adj".to_string() } else { format!("adj{}", i + 1) };
                     let v = if v.is_finite() { v.round().clamp(-2.0e9, 2.0e9) as i64 } else { 0 };

@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod cfb;
 mod custgeom;
 mod maps;
 mod opc;
@@ -20,6 +21,9 @@ use deckcraft_model::Presentation;
 
 /// Extension URI of the PowerPoint 2010 section list in `presentation.xml`.
 pub(crate) const SECTION_EXT_URI: &str = "{521415D9-36F7-43E2-AB2F-B90AF26B5E84}";
+
+/// Extension URI of the modern-comments anchor in a slide (names the threaded comment part).
+pub(crate) const COMMENTS_EXT_URI: &str = "{6950BFC3-D8DA-4A85-94F7-54DA5524770B}";
 
 #[derive(Debug, thiserror::Error)]
 pub enum PptxError {
@@ -44,6 +48,11 @@ pub fn sniff(bytes: &[u8]) -> bool {
     zip::ZipArchive::new(std::io::Cursor::new(bytes)).map(|z| z.index_for_name("[Content_Types].xml").is_some()).unwrap_or(false)
 }
 
+/// Is this a password-protected presentation (an encrypted package inside a compound file)?
+pub fn is_encrypted(bytes: &[u8]) -> bool {
+    cfb::is_encrypted(bytes)
+}
+
 /// Read a `.pptx` / `.potx` / `.ppsx` package.
 pub fn import(bytes: &[u8]) -> Result<Presentation, PptxError> {
     read::import(bytes)
@@ -51,7 +60,18 @@ pub fn import(bytes: &[u8]) -> Result<Presentation, PptxError> {
 
 /// Write a `.pptx` package.
 pub fn export(p: &Presentation) -> Result<Vec<u8>, PptxError> {
-    write::export(p)
+    write::export(p, write::CT_PRES)
+}
+
+/// Write a package for `ext`: `potx` (template) and `ppsx` (slide show) differ from `pptx` only in
+/// the main part's content type.
+pub fn export_as(p: &Presentation, ext: &str) -> Result<Vec<u8>, PptxError> {
+    let ct = match ext {
+        "potx" => write::CT_TEMPLATE,
+        "ppsx" => write::CT_SHOW,
+        _ => write::CT_PRES,
+    };
+    write::export(p, ct)
 }
 
 /// Content type for a file name's extension.

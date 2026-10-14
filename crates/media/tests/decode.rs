@@ -313,6 +313,23 @@ fn video_feed_follows_the_clock() {
 }
 
 #[test]
+fn video_feed_repeated_seeks_keep_the_requested_frame() {
+    let timeout = Duration::from_secs(5);
+    for name in ["clip-h264.mov", "clip-hevc.mp4", "clip-vp9.webm", "clip-av1.mkv"] {
+        let mut feed = deckcraft_media::VideoFeed::new(fixture(name)).expect("feed");
+        for _ in 0..20 {
+            // A decoder can finish this small clip before the consumer next polls it.
+            // Rewinding must keep the new generation's first frame, even at end of stream.
+            feed.seek(0.05);
+            let frame = feed.frame_at_blocking(0.05, timeout).expect("frame after rewind");
+            assert_eq!(frame.time, 0.0, "{name}");
+            let frame = feed.frame_at_blocking(0.45, timeout).expect("frame after advancing");
+            assert!((frame.time - 0.4).abs() < 0.02, "{name}: {}", frame.time);
+        }
+    }
+}
+
+#[test]
 fn player_plays_decoded_audio_through_the_mixer() {
     use deckcraft_media::{ClipParams, Player, VoiceSpec};
     let b: Bytes = Arc::new(wav(48_000, 1, &sine(48_000, 0.5)));

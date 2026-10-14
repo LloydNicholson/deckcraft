@@ -71,16 +71,52 @@ pub struct Part {
     pub name: String,
     pub rels: Rels,
     pub ns: Vec<(String, String)>,
+    /// Prefixes bound below the root only (on a wrapper such as `mc:Choice`), each to one namespace.
+    pub inner_ns: Vec<(String, String)>,
 }
 
 impl Part {
     pub fn new(pkg: &Package, name: &str, doc: &Doc) -> Self {
-        Part { name: name.to_string(), rels: pkg.rels(name), ns: doc.ns_decls() }
+        let ns = doc.ns_decls();
+        Part { name: name.to_string(), rels: pkg.rels(name), inner_ns: inner_decls(&doc.root, &ns), ns }
     }
     /// Serialize an element with the namespace declarations it needs from the part root.
     pub fn keep(&self, el: &El) -> String {
         keep_xml(el, &self.ns)
     }
+    /// Like [`Part::keep`], also declaring prefixes that only an enclosing wrapper binds.
+    pub fn keep_inner(&self, el: &El) -> String {
+        let ns: Vec<(String, String)> = self.ns.iter().chain(&self.inner_ns).cloned().collect();
+        keep_xml(el, &ns)
+    }
+}
+
+/// Prefixes declared below the root but not on it, skipping any bound to different namespaces.
+fn inner_decls(root: &El, ns: &[(String, String)]) -> Vec<(String, String)> {
+    fn rec(e: &El, out: &mut Vec<(String, String)>, clash: &mut HashSet<String>, depth: usize) {
+        if depth > crate::xml::MAX_DEPTH {
+            return;
+        }
+        for (k, v) in e.attrs.iter().filter(|(k, _)| k.starts_with("xmlns:")) {
+            match out.iter().find(|(o, _)| o == k).map(|(_, u)| u != v) {
+                Some(true) => {
+                    clash.insert(k.clone());
+                }
+                Some(false) => {}
+                None => out.push((k.clone(), v.clone())),
+            }
+        }
+        for c in e.elements() {
+            rec(c, out, clash, depth + 1);
+        }
+    }
+    let mut out = vec![];
+    let mut clash = HashSet::new();
+    for c in root.elements() {
+        rec(c, &mut out, &mut clash, 1);
+    }
+    out.retain(|(k, _)| !clash.contains(k) && !ns.iter().any(|(r, _)| r == k));
+    out
 }
 
 /// Serialize `el`, declaring every prefix it uses that the source root declared.
@@ -312,11 +348,23 @@ pub fn import(bytes: &[u8]) -> Result<Presentation, PptxError> {
             let np = Part::new(&pkg, &n.target, &nd);
             slide.notes = read_notes(&mut imp, &np, &nd.root);
         }
-        // Comments.
+        // Comments. A modern part and the legacy part can describe the same threads (PowerPoint
+        // writes both): the modern one wins, its flattened legacy copy is skipped.
+        let mut parts: Vec<(Doc, bool)> = vec![];
         for c in part.rels.all_of("comments") {
             if let Some(cd) = pkg.xml(&c.target) {
-                slide.comments.extend(read_comments(&pkg, &pres_part, &cd.root));
+                // The content type names the modern part; a package that types it only through a
+                // Default entry instead of an Override is still modern when its root is p188.
+                let modern = pkg.content_type(&c.target).as_deref() == Some(crate::write::CT_COMMENTS_MODERN) || cd.root.prefix() == "p188";
+                parts.push((cd, modern));
             }
+        }
+        let has_modern = parts.iter().any(|(_, m)| *m);
+        for (cd, modern) in parts {
+            if has_modern && !modern {
+                continue;
+            }
+            slide.comments.extend(read_comments(&pkg, &pres_part, &cd.root, modern));
         }
         file_slide_ids.insert(*file_id, *id);
         p.slides.push(Arc::new(slide));
@@ -746,7 +794,7 @@ fn read_notes(imp: &mut Imp, part: &Part, root: &El) -> TextBody {
     TextBody::default()
 }
 
-fn read_comments(pkg: &Package, pres: &Part, root: &El) -> Vec<Comment> {
+fn read_comments(pkg: &Package, pres: &Part, root: &El, modern: bool) -> Vec<Comment> {
     // Authors: legacy commentAuthors.xml (numeric ids) and modern authors.xml (GUIDs).
     let mut authors: HashMap<String, (String, String)> = HashMap::new();
     for kind in ["commentAuthors", "authors"] {
@@ -760,7 +808,9 @@ fn read_comments(pkg: &Package, pres: &Part, root: &El) -> Vec<Comment> {
             }
         }
     }
-    fn one(e: &El, authors: &HashMap<String, (String, String)>, depth: usize) -> Comment {
+    // Legacy positions are 1/8 pt; the modern part's p188:pos is an a:CT_Point2D in EMU.
+    let scale = if modern { 12_700.0 } else { 8.0 };
+    fn one(e: &El, authors: &HashMap<String, (String, String)>, depth: usize, scale: f64) -> Comment {
         let (author, initials) = e.attr("authorId").and_then(|a| authors.get(a).cloned()).unwrap_or_default();
         let text = if let Some(t) = e.child("text") {
             t.text()
@@ -771,7 +821,7 @@ fn read_comments(pkg: &Package, pres: &Part, root: &El) -> Vec<Comment> {
         };
         let pos = e.child("pos");
         let replies = if depth < 4 {
-            e.child("replyLst").map(|l| l.children_named("reply").take(1000).map(|r| one(r, authors, depth + 1)).collect()).unwrap_or_default()
+            e.child("replyLst").map(|l| l.children_named("reply").take(1000).map(|r| one(r, authors, depth + 1, scale)).collect()).unwrap_or_default()
         } else {
             vec![]
         };
@@ -780,14 +830,14 @@ fn read_comments(pkg: &Package, pres: &Part, root: &El) -> Vec<Comment> {
             initials,
             text,
             date: e.attr("dt").or(e.attr("created")).unwrap_or("").to_string(),
-            x: pos.and_then(|p| p.f64("x")).unwrap_or(0.0) / 8.0,
-            y: pos.and_then(|p| p.f64("y")).unwrap_or(0.0) / 8.0,
+            x: pos.and_then(|p| p.f64("x")).unwrap_or(0.0) / scale,
+            y: pos.and_then(|p| p.f64("y")).unwrap_or(0.0) / scale,
             resolved: e.attr("status") == Some("resolved"),
             replies,
             shape: None,
         }
     }
-    root.children_named("cm").take(10_000).map(|c| one(c, &authors, 0)).collect()
+    root.children_named("cm").take(10_000).map(|c| one(c, &authors, 0, scale)).collect()
 }
 
 fn read_show(sp: &El, shows: &HashMap<String, String>) -> ShowSettings {

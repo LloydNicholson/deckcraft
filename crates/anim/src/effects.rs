@@ -44,6 +44,15 @@ pub(crate) fn exit_base(effect: &str) -> &str {
         "swivelOut" => "swivel",
         "bounceOut" => "bounce",
         "dissolveOut" => "dissolve",
+        "blindsOut" => "blinds",
+        "boxOut" => "box",
+        "checkerboardOut" => "checkerboard",
+        "diamondOut" => "diamond",
+        "peekOut" => "peek",
+        "stripsOut" => "strips",
+        "sinkDown" => "rise",
+        "spinnerOut" => "spinner",
+        "contract" => "expand",
         other => other,
     }
 }

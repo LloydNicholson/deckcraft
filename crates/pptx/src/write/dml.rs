@@ -95,12 +95,21 @@ pub fn fill(w: &mut W, x: &mut Exp, o: &mut Out, f: &Fill) {
 
 /// `a:blipFill` / `p:blipFill`.
 pub fn blip_fill(w: &mut W, x: &mut Exp, o: &mut Out, tag: &str, pf: &PictureFill) {
+    // An image that lives outside the package is a linked picture: `a:blip` names it through
+    // `r:link`; `r:embed` may only reference a part inside the package.
+    let linked = x.p.media(pf.media).is_some_and(|m| m.data.is_empty() && m.link.is_some());
     let rid = x.media_rel(o, pf.media, "image").unwrap_or_else(|| x.placeholder_rel(o));
-    w.open(tag, A::new().a("rotWithShape", "1"));
+    w.open(tag, A::new().a("rotWithShape", if pf.upright { "0" } else { "1" }));
     let adj = &pf.adjust;
-    let has_kids =
-        pf.alpha.is_some() || adj.brightness != 0.0 || adj.contrast != 0.0 || adj.grayscale || adj.duotone.is_some() || adj.clear_color.is_some();
-    let a = A::new().a("r:embed", &rid);
+    let has_kids = pf.alpha.is_some()
+        || adj.brightness != 0.0
+        || adj.contrast != 0.0
+        || adj.grayscale
+        || adj.duotone.is_some()
+        || adj.clear_color.is_some()
+        || adj.bilevel.is_some()
+        || adj.alpha_inv;
+    let a = if linked { A::new().a("r:link", &rid) } else { A::new().a("r:embed", &rid) };
     if has_kids {
         w.open("a:blip", a);
         if let Some(c) = adj.clear_color {
@@ -115,6 +124,12 @@ pub fn blip_fill(w: &mut W, x: &mut Exp, o: &mut Out, tag: &str, pf: &PictureFil
         }
         if let Some(al) = pf.alpha {
             w.empty("a:alphaModFix", A::new().a("amt", pct(al.clamp(0.0, 1.0))));
+        }
+        if adj.alpha_inv {
+            w.empty0("a:alphaInv");
+        }
+        if let Some(t) = adj.bilevel {
+            w.empty("a:biLevel", A::new().a("thresh", pct(t.clamp(0.0, 1.0))));
         }
         if let Some((d, l)) = &adj.duotone {
             w.open0("a:duotone");
@@ -271,6 +286,10 @@ fn gradient(w: &mut W, g: &deckcraft_model::style::Gradient) {
             w.empty("a:fillToRect", A::new().a("l", pct(focus[0])).a("t", pct(focus[1])).a("r", pct(focus[2])).a("b", pct(focus[3])));
             w.close("a:path");
         }
+    }
+    if g.tile.iter().any(|v| *v != 0.0) {
+        let [l, t, r, b] = g.tile;
+        w.empty("a:tileRect", A::new().a("l", pct(l)).a("t", pct(t)).a("r", pct(r)).a("b", pct(b)));
     }
     w.close("a:gradFill");
 }
@@ -505,7 +524,12 @@ pub fn ppr(w: &mut W, x: &mut Exp, o: &mut Out, tag: &str, level: Option<u8>, p:
         Some(Bullet::Picture { media }) => match x.media_rel(o, *media, "image") {
             Some(rid) => {
                 w.open0("a:buBlip");
-                w.empty("a:blip", A::new().a("r:embed", rid));
+                let a = if x.p.media(*media).is_some_and(|m| m.data.is_empty() && m.link.is_some()) {
+                    A::new().a("r:link", &rid)
+                } else {
+                    A::new().a("r:embed", &rid)
+                };
+                w.empty("a:blip", a);
                 w.close("a:buBlip");
             }
             None => w.empty("a:buChar", A::new().a("char", "•")),

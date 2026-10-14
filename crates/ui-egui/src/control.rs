@@ -342,6 +342,7 @@ fn deckcraft_mcp_kind(k: &str) -> Option<deckcraft_engine::PointerKind> {
         "move" => Move,
         "doubleclick" | "dblclick" => DoubleClick,
         "tripleclick" => TripleClick,
+        "contextclick" | "rightclick" => ContextClick,
         _ => return None,
     })
 }

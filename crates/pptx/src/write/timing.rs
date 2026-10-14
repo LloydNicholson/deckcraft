@@ -208,14 +208,14 @@ fn filter_for(effect: &str, option: &str) -> &'static str {
                 "randombar(horizontal)"
             }
         }
-        "blinds" => {
+        "blinds" | "blindsOut" => {
             if option == "vert" {
                 "blinds(vertical)"
             } else {
                 "blinds(horizontal)"
             }
         }
-        "box" => {
+        "box" | "boxOut" => {
             if option == "out" {
                 "box(out)"
             } else {
@@ -229,7 +229,7 @@ fn filter_for(effect: &str, option: &str) -> &'static str {
                 "circle(in)"
             }
         }
-        "diamond" => {
+        "diamond" | "diamondOut" => {
             if option == "out" {
                 "diamond(out)"
             } else {
@@ -246,7 +246,7 @@ fn filter_for(effect: &str, option: &str) -> &'static str {
             "plusOut" => "plus(out)",
             _ => "circle(in)",
         },
-        "checkerboard" => {
+        "checkerboard" | "checkerboardOut" => {
             if option == "down" {
                 "checkerboard(down)"
             } else {
@@ -261,13 +261,13 @@ fn filter_for(effect: &str, option: &str) -> &'static str {
             "8" => "wheel(8)",
             _ => "wheel(1)",
         },
-        "strips" => match option {
+        "strips" | "stripsOut" => match option {
             "ru" => "strips(upRight)",
             "ld" => "strips(downLeft)",
             "rd" => "strips(downRight)",
             _ => "strips(upLeft)",
         },
-        "peek" => match option {
+        "peek" | "peekOut" => match option {
             "t" => "slide(fromTop)",
             "l" => "slide(fromLeft)",
             "r" => "slide(fromRight)",
@@ -328,7 +328,12 @@ fn behaviors(w: &mut W, x: &mut Exp, ids: &mut Ids, e: &Eff) {
                     anim_prop(w, ids, e, dur, "ppt_x", "#ppt_x", fx);
                     anim_prop(w, ids, e, dur, "ppt_y", "#ppt_y", fy);
                 }
-                "zoomOut" | "shrinkTurn" => {
+                "floatOut" | "sinkDown" => {
+                    let to = if a.effect == "sinkDown" || a.option == "d" { "#ppt_y+.1" } else { "#ppt_y-.1" };
+                    anim_prop(w, ids, e, dur, "ppt_y", "#ppt_y", to);
+                    anim_effect(w, ids, e, dur, "fade", true);
+                }
+                "zoomOut" | "shrinkTurn" | "spinnerOut" | "contract" => {
                     anim_prop(w, ids, e, dur, "ppt_w", "#ppt_w", "0");
                     anim_prop(w, ids, e, dur, "ppt_h", "#ppt_h", "0");
                     anim_effect(w, ids, e, dur, "fade", true);
@@ -425,7 +430,11 @@ fn effect_par(w: &mut W, x: &mut Exp, ids: &mut Ids, e: &Eff, first_in_click: bo
     };
     let _ = first_in_click;
     let preset = crate::maps::preset_for(a);
-    let sub = crate::maps::subtype_from_option(&a.effect, &a.option).or(a.preset_subtype.filter(|_| a.preset_id == Some(preset))).unwrap_or(0);
+    let sub = if preset == 47 {
+        0
+    } else {
+        crate::maps::subtype_from_option(&a.effect, &a.option).or(a.preset_subtype.filter(|_| a.preset_id == Some(preset))).unwrap_or(0)
+    };
     let repeat = match a.repeat {
         u32::MAX => Some("indefinite".to_string()),
         0 | 1 => None,
@@ -445,7 +454,7 @@ fn effect_par(w: &mut W, x: &mut Exp, ids: &mut Ids, e: &Eff, first_in_click: bo
             .o("accel", accel)
             .o("decel", decel)
             .t("autoRev", a.auto_reverse)
-            .a("fill", "hold")
+            .a("fill", if a.rewind { "remove" } else { "hold" })
             .a("grpId", e.grp)
             .a("nodeType", node),
     );

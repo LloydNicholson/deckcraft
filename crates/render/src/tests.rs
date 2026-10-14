@@ -126,6 +126,36 @@ fn effects_tables_charts_render() {
 }
 
 #[test]
+fn combo_chart_draws_columns_and_a_line_on_its_own_axis() {
+    // Columns in the hundreds of thousands, a green line in the thousands on the secondary axis:
+    // the line must sit up in the plot, not flat along the bottom of the primary scale.
+    let mut c = Chart::sample(ChartType::Combo);
+    c.title = None;
+    c.legend = None;
+    c.series.truncate(2);
+    c.categories = vec!["A".into(), "B".into(), "C".into()];
+    c.series[0].kind = Some(ChartType::Column);
+    c.series[0].values = vec![Some(200_000.0), Some(300_000.0), Some(250_000.0)];
+    c.series[1].kind = Some(ChartType::Line);
+    c.series[1].values = vec![Some(7_000.0), Some(7_000.0), Some(7_000.0)];
+    c.series[1].secondary_axis = true;
+    c.series[1].line = Some(deckcraft_model::style::Line::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 176, 80)), 3.0));
+    let sh = Shape { id: ShapeId(620), xfrm: Some(Xfrm::new(0.0, 0.0, 960.0, 540.0)), kind: ShapeKind::Chart(Box::new(c)), ..Default::default() };
+    let img = render_slide(&deck_with(vec![sh]), 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    let green = |x: u32, y0: u32, y1: u32| {
+        (y0..y1).any(|y| {
+            let p = img.pixel(x, y);
+            p[1] > 120 && p[0] < 80 && p[2] < 140
+        })
+    };
+    // The line is in the upper half (7 000 of an axis to 8 000), and columns fill the plot's bottom.
+    assert!(green(480, 20, 270), "line not in the upper half");
+    assert!(!green(480, 400, 500), "line along the bottom");
+    let col = img.pixel(480, 480);
+    assert!(col[0] < 250 || col[1] < 250 || col[2] < 250, "no column: {col:?}");
+}
+
+#[test]
 fn placeholder_prompts_only_in_edit_view() {
     let p = Presentation::default();
     let edit = render_slide(&p, 0, &RenderOpts { scale: 0.5, edit: true, ..Default::default() });
@@ -535,6 +565,7 @@ fn a_linear_gradient_ramps_like_powerpoint() {
         id: ShapeId(700),
         xfrm: Some(Xfrm::new(0.0, 0.0, 800.0, 100.0)),
         fill: Some(Fill::Gradient(Gradient {
+            tile: [0.0; 4],
             stops: vec![stop(0.0, deckcraft_color::Rgba::rgb(0, 0, 0)), stop(1.0, deckcraft_color::Rgba::rgb(255, 255, 255))],
             shape: GradientShape::Linear { angle: 0.0, scaled: false },
             rotate_with_shape: true,
@@ -559,6 +590,7 @@ fn a_gradient_with_a_stop_off_the_end_stays_linear() {
         id: ShapeId(701),
         xfrm: Some(Xfrm::new(0.0, 0.0, 800.0, 100.0)),
         fill: Some(Fill::Gradient(Gradient {
+            tile: [0.0; 4],
             stops: vec![stop(0.2, deckcraft_color::Rgba::rgb(0, 0, 0)), stop(1.0, deckcraft_color::Rgba::rgb(255, 255, 255))],
             shape: GradientShape::Linear { angle: 0.0, scaled: false },
             rotate_with_shape: true,
@@ -599,6 +631,7 @@ fn a_shape_filled_with_the_background_shows_the_slide_background() {
     let stop = |pos, v| GradientStop { pos, color: ColorRef::rgb(deckcraft_color::Rgba::rgb(v, v, v)) };
     std::sync::Arc::make_mut(&mut p.slides[0]).background = Some(deckcraft_model::Background::Fill {
         fill: Fill::Gradient(Gradient {
+            tile: [0.0; 4],
             stops: vec![stop(0.0, 0), stop(0.5, 0), stop(1.0, 200)],
             shape: GradientShape::Linear { angle: 0.0, scaled: false },
             rotate_with_shape: true,
@@ -672,6 +705,7 @@ fn a_text_gradient_starts_over_on_every_line() {
         let props = &mut p.runs[0].props;
         props.size = Some(80.0);
         props.fill = Some(Fill::Gradient(Gradient {
+            tile: [0.0; 4],
             stops: vec![stop(0.0, 0), stop(1.0, 255)],
             shape: GradientShape::Linear { angle: 90.0, scaled: false },
             rotate_with_shape: true,
@@ -832,6 +866,7 @@ fn rect_path_gradients_draw_x_shaped_contours() {
         id: ShapeId(770),
         xfrm: Some(Xfrm::new(0.0, 0.0, 280.0, 200.0)),
         fill: Some(Fill::Gradient(Gradient {
+            tile: [0.0; 4],
             stops: vec![stop(0.0, 0), stop(0.5, 128), stop(1.0, 255)],
             shape: GradientShape::Path { path: "rect".into(), focus: [0.5, 0.5, 0.5, 0.5] },
             rotate_with_shape: true,
@@ -1613,4 +1648,117 @@ fn a_fill_overlay_blends_over_the_fill() {
     assert!((screen[0] as i32 - 128).abs() <= 3, "{screen:?}");
     let (over, _) = draw([200, 100, 50], "over");
     assert!((over[0] as i32 - 128).abs() <= 3 && (over[1] as i32 - 128).abs() <= 3, "{over:?}");
+}
+
+#[test]
+fn dotted_and_wavy_underlines_draw_their_pattern() {
+    // Underlined spaces only, so the underline is the only ink: a red line under "      ".
+    let row_runs = |u: &str| {
+        let mut sh = Shape { id: ShapeId(760), xfrm: Some(Xfrm::new(0.0, 0.0, 900.0, 300.0)), text_box: true, ..Default::default() };
+        let mut t = TextBody::from_text("            ");
+        let props = &mut t.paragraphs[0].runs[0].props;
+        props.size = Some(96.0);
+        props.underline = Some(u.into());
+        props.fill = Some(deckcraft_model::style::Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(255, 0, 0))));
+        sh.text = Some(t);
+        let p = deck_with(vec![sh]);
+        let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+        let red = |x: u32, y: u32| {
+            let px = img.pixel(x, y);
+            px[0] > 150 && px[1] < 120
+        };
+        // The ink's rows, and the number of separate red stretches along the most inked row.
+        let rows: Vec<u32> = (0..300).filter(|&y| (0..900).any(|x| red(x, y))).collect();
+        let best = rows.iter().copied().max_by_key(|&y| (0..900).filter(|&x| red(x, y)).count()).unwrap_or(0);
+        let stretches = (1..900).filter(|&x| red(x, best) && !red(x - 1, best)).count();
+        (rows.len(), stretches)
+    };
+    let (sng_rows, sng_runs) = row_runs("sng");
+    assert_eq!(sng_runs, 1, "a single line is one stretch");
+    let (_, dotted_runs) = row_runs("dotted");
+    assert!(dotted_runs > 10, "dots: {dotted_runs}");
+    let (wavy_rows, _) = row_runs("wavy");
+    assert!(wavy_rows > sng_rows, "a wave spans more rows ({wavy_rows}) than a single line ({sng_rows})");
+}
+
+#[test]
+fn east_asian_vertical_text_stands_ideographs_upright() {
+    // "一" is a horizontal stroke. In eaVert text it stays horizontal (upright) while the line runs
+    // down the shape; in vert it lies on its side like Latin text.
+    let ink = |dir: deckcraft_model::text::TextDir| {
+        let mut sh = Shape { id: ShapeId(770), xfrm: Some(Xfrm::new(100.0, 50.0, 200.0, 400.0)), text_box: true, ..Default::default() };
+        let mut t = TextBody::from_text("一");
+        t.body.vert = Some(dir);
+        let props = &mut t.paragraphs[0].runs[0].props;
+        props.size = Some(80.0);
+        props.fill = Some(deckcraft_model::style::Fill::solid(ColorRef::rgb(deckcraft_color::Rgba::rgb(0, 0, 0))));
+        sh.text = Some(t);
+        let p = deck_with(vec![sh]);
+        let img = render_slide(&p, 0, &RenderOpts { scale: 1.0, ..Default::default() });
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        for y in 0..540 {
+            for x in 0..960 {
+                if img.pixel(x, y)[0] < 128 {
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                }
+            }
+        }
+        assert!(x1 >= x0 && y1 >= y0, "no ink for {dir:?}");
+        (x1 - x0, y1 - y0)
+    };
+    let (w, h) = ink(deckcraft_model::text::TextDir::EaVertical);
+    assert!(w > h * 3, "eaVert: upright stroke {w}x{h}");
+    let (w, h) = ink(deckcraft_model::text::TextDir::Vertical);
+    assert!(h > w * 3, "vert: stroke on its side {w}x{h}");
+}
+
+#[test]
+fn placed_shapes_give_the_click_boxes_of_a_slide_in_drawing_order() {
+    use deckcraft_model::text::{Action, Hyperlink};
+    let link = Hyperlink { action: Action::NextSlide, tooltip: String::new(), highlight_click: false };
+    let rect = |id: u32, x: f64, click: Option<Hyperlink>| Shape {
+        id: ShapeId(id),
+        xfrm: Some(Xfrm::new(x, 50.0, 100.0, 40.0)),
+        click,
+        ..Default::default()
+    };
+    let group = Shape {
+        id: ShapeId(10),
+        xfrm: Some(Xfrm::new(300.0, 50.0, 200.0, 40.0)),
+        click: Some(link.clone()),
+        kind: ShapeKind::Group { children: vec![rect(11, 0.0, None), rect(12, 100.0, None)], child: Xfrm::new(0.0, 0.0, 200.0, 40.0) },
+        ..Default::default()
+    };
+    let hidden = Shape { hidden: true, ..rect(13, 0.0, Some(link.clone())) };
+    let p = deck_with(vec![rect(1, 0.0, None), rect(2, 150.0, Some(link.clone())), hidden, group]);
+    let placed = place_slide(&p, 0);
+    // Back to front, a group before its children; the hidden shape is not there.
+    let ids: Vec<u32> = placed.shapes.iter().map(|s| s.id.0).collect();
+    assert_eq!(ids, vec![1, 2, 10, 11, 12]);
+    // Only the shapes with an action carry a link.
+    let linked: Vec<u32> = placed.shapes.iter().filter(|s| s.link.is_some()).map(|s| s.id.0).collect();
+    assert_eq!(linked, vec![2, 10]);
+    // The children know their group, whose box covers them.
+    let group = &placed.shapes[2];
+    assert!(group.is_group && group.parent.is_none());
+    for child in &placed.shapes[3..] {
+        assert_eq!(child.parent, Some(2));
+        assert!(child.rect.x0 >= group.rect.x0 - 0.01 && child.rect.x1 <= group.rect.x1 + 0.01);
+    }
+    // Shape actions come out as links owned by their shape, not as text links.
+    assert!(placed.links.iter().all(|l| !l.text));
+    assert_eq!(placed.links.iter().map(|l| l.shape.0).collect::<Vec<_>>(), vec![2, 10]);
+}
+
+#[test]
+fn a_text_hyperlink_belongs_to_the_shape_that_holds_the_text() {
+    use deckcraft_model::text::{Action, Hyperlink};
+    let mut body = TextBody::from_text("click here");
+    for r in &mut body.paragraphs[0].runs {
+        r.props.link = Some(Hyperlink { action: Action::FirstSlide, tooltip: String::new(), highlight_click: false });
+    }
+    let sh = Shape { id: ShapeId(7), xfrm: Some(Xfrm::new(100.0, 100.0, 300.0, 60.0)), text: Some(body), ..Default::default() };
+    let placed = place_slide(&deck_with(vec![sh]), 0);
+    assert!(placed.links.iter().any(|l| l.text && l.shape == ShapeId(7)));
+    assert!(placed.shapes.iter().all(|s| s.link.is_none()), "a text link is not the shape's own action");
 }

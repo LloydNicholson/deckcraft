@@ -555,6 +555,7 @@ impl Decoder {
         if tg_end >= num_tiles || tg_start > tg_end {
             return Err(Error::Invalid("tile group range"));
         }
+        check_tile_group_start(job.tiles.len(), tg_start)?;
         let mut pos = r.byte_pos();
         for tile_num in tg_start..=tg_end {
             let size = if tile_num == tg_end {
@@ -946,4 +947,27 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
         }
     }
     true
+}
+
+/// Tile groups must arrive in order with no gaps and no overlap: each one starts at the tile
+/// after the last one received (`tg_start` semantics, 6.10.1).
+fn check_tile_group_start(received: usize, tg_start: usize) -> Result<()> {
+    if tg_start == received { Ok(()) } else { Err(Error::Invalid("tile group out of order")) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_tile_group_start;
+
+    #[test]
+    fn tile_groups_must_be_contiguous() {
+        assert!(check_tile_group_start(0, 0).is_ok());
+        assert!(check_tile_group_start(2, 2).is_ok());
+        // duplicate coverage
+        assert!(check_tile_group_start(2, 0).is_err());
+        assert!(check_tile_group_start(2, 1).is_err());
+        // skipped tiles
+        assert!(check_tile_group_start(0, 1).is_err());
+        assert!(check_tile_group_start(2, 3).is_err());
+    }
 }

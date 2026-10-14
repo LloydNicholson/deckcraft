@@ -178,8 +178,9 @@ impl Table {
         if gs == 1 && rs == 1 {
             return false;
         }
-        for rr in r..r + rs {
-            for cc in c..c + gs {
+        // Spans come from the file and may reach past the table; only walk the cells that exist.
+        for rr in r..r.saturating_add(rs).min(self.rows.len()) {
+            for cc in c..c.saturating_add(gs).min(self.cols.len()) {
                 if let Some(x) = self.cell_mut(rr, cc) {
                     x.h_merge = false;
                     x.v_merge = false;
@@ -348,5 +349,16 @@ mod tests {
         let mut one = Table::new(1, 1, 10.0, 10.0);
         assert!(!one.delete_row(0) && !one.delete_col(0));
         assert!(table_styles().len() > 30);
+    }
+
+    #[test]
+    fn split_ignores_spans_past_the_table() {
+        let mut t = Table::new(2, 2, 100.0, 10.0);
+        if let Some(c) = t.cell_mut(0, 0) {
+            c.grid_span = u32::MAX;
+            c.row_span = u32::MAX;
+        }
+        assert!(t.split(0, 0));
+        assert_eq!(t.cell(0, 0).map(|c| (c.grid_span, c.row_span)), Some((1, 1)));
     }
 }

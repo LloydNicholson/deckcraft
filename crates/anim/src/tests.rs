@@ -789,3 +789,45 @@ fn show_follows_links() {
     assert_eq!(s.follow(&p, &Action::LastViewed, None), LinkJump::None);
     assert_eq!(s.slide, 3);
 }
+
+/// #420: late in the Honeycomb every cell has settled, so the incoming hexagons must cover the
+/// whole slide — the old row count stopped at ~75% of a 16:9 slide and left the bottom black.
+#[test]
+fn honeycomb_cells_reach_the_bottom_before_the_slide_ends() {
+    let sign = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| (a[0] - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (a[1] - c[1]);
+    let inside = |p: [f64; 2], t: [[f64; 2]; 3]| {
+        // The dark seams between cells are the effect: at t=0.99 they are ~0.012% of the width
+        // open, so a 1% pad forgives them and still fails genuinely uncovered ground.
+        let c = [(t[0][0] + t[1][0] + t[2][0]) / 3.0, (t[0][1] + t[1][1] + t[2][1]) / 3.0];
+        let t = t.map(|v| [c[0] + (v[0] - c[0]) * 1.01, c[1] + (v[1] - c[1]) * 1.01]);
+        let (d1, d2, d3) = (sign(p, t[0], t[1]), sign(p, t[1], t[2]), sign(p, t[2], t[0]));
+        !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+    };
+    for aspect in [16.0 / 9.0, 3.0 / 2.0, 4.0 / 3.0, 11.0 / 8.5, 1.0] {
+        // t = 0.99: every cell is settled and the seams are nearly closed.
+        let ls = transition_frame("honeycomb", "", 0.99, aspect);
+        let tris: Vec<[[f64; 2]; 3]> =
+            ls.iter().filter(|l| l.source == Source::New && l.alpha >= 1.0).map(|l| [l.quad[0], l.quad[1], l.quad[2]]).collect();
+        assert!(!tris.is_empty());
+        let mut sy = 0.0;
+        while sy <= 1.0 {
+            for sx in [0.0, 0.2, 0.4, 0.6, 0.8, 0.99, 1.0] {
+                let p = [sx, sy];
+                assert!(tris.iter().any(|t| inside(p, *t)), "honeycomb aspect {aspect} t=0.99: {sx},{sy} is uncovered (no settled cell reaches it)");
+            }
+            sy += 0.02;
+        }
+    }
+}
+
+/// #147: exits PowerPoint plays downward leave downward here too.
+#[test]
+fn sink_down_and_peek_out_to_bottom_move_down() {
+    for (effect, option) in [("sinkDown", ""), ("peekOut", "b"), ("floatOut", "d")] {
+        let mut a = anim(1, AnimClass::Exit, effect, AnimStart::OnClick);
+        a.option = option.into();
+        let tl = Timeline::new(&slide_with(vec![a]), W, H);
+        let s = tl.state(ShapeId(1), None, 0, 0.5);
+        assert!(s.offset_y > 0.0, "{effect} {option}: {s:?}");
+    }
+}

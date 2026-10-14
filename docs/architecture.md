@@ -1,6 +1,6 @@
 # DeckCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (created from the code on main at d556ff9; AGENTS.md §4 keeps the rules) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
+> **Last reviewed:** 2026-10-13 · **Last updated:** 2026-10-13 · **Change:** minor (transition frames: perspective meshes, slide parts, headless compositor; previous: created from the code on main at d556ff9) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
 
 How DeckCraft is built today. The binding rules (layering, everything is a command, thin UI, never
 break wasm, never crash) are in [AGENTS.md](../AGENTS.md) §3–§5; this document describes what
@@ -49,8 +49,12 @@ Programmatic calls never open dialogs. Pointer gestures go through `Session::poi
 ## Rendering and the show
 
 The renderer draws a slide to an RGBA pixmap on the CPU; the UI uploads it as an egui texture.
-Transitions are layers of textured quads over the old and new slide images (fake 3-D from
-trapezoids). The show window and the presenter view are egui viewports; animation state per shape
+Transitions are layers of textured quads over the old and new slide images, or over their
+backgrounds and contents rendered apart (Dynamic Content), from `anim::transition_frame`: 3-D
+effects project cards through a perspective camera and `anim::layer_mesh` subdivides them so
+textures stay straight; soft edges are per-corner opacities. The show renders the slides once per
+transition and only composites cached textures each frame; `render::composite_transition` is the
+CPU twin used by `deckcraft-cli render-transition` and the tests. The show window and the presenter view are egui viewports; animation state per shape
 comes from `anim::timeline` each frame. PDF export renders each slide at print resolution and
 overlays an invisible real-text layer with embedded font subsets.
 
@@ -74,4 +78,5 @@ macOS, Windows, Linux, FreeBSD and web artifacts.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | Transitions: perspective meshes, background/content parts, CPU compositor |
 | 2026-10-10 | major | Created from the code on main (d556ff9) and AGENTS.md §4 |
