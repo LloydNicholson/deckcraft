@@ -24,7 +24,7 @@
   <img alt="Status: early development" src="https://img.shields.io/badge/status-early%20development-f26b1d?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e?style=flat-square">
-  <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20·%20Windows%20·%20Linux%20·%20BSD%20·%20Web-555?style=flat-square">
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20BSD%20%C2%B7%20Web-555?style=flat-square">
 </p>
 
 <p align="center">
@@ -58,7 +58,7 @@
 
 ## What works today
 
-DeckCraft is in early development, heading for its first alpha (see the [roadmap](ROADMAP.md)).
+DeckCraft is in alpha, heading for beta (see the [roadmap](ROADMAP.md)).
 Today it can:
 
 - **Make decks**: slide masters and eleven layouts with placeholders that inherit position and
@@ -75,7 +75,7 @@ Today it can:
 - **Present**: transitions (including Morph), entrance/emphasis/exit and motion-path animations,
   by-paragraph builds, full-screen slide show, presenter view, pen, rehearse timings, media playback.
 - **Exchange files**: open and save PowerPoint `.pptx`, export PDF (slides, notes pages, handouts
-  with selectable text), PNG/JPEG and outlines. Unsaved work is kept by AutoRecover.
+  with selectable text), PNG/JPEG, an animated GIF of the deck and outlines. Unsaved work is kept by AutoRecover.
 - **Automate**: 200+ commands with undo, all scriptable from the CLI, a JSON control channel and an
   MCP server for AI agents.
 
@@ -96,6 +96,9 @@ Today it can:
 </p>
 
 ## Getting started
+
+PDF export uses the shared `craft-pdf` writer with import features disabled. See
+[`crates/pdf/README.md`](crates/pdf/README.md) for the dependency and validation requirements.
 
 ```sh
 git clone https://github.com/storytold/deckcraft
@@ -150,14 +153,17 @@ deckcraft-cli commands format.          # list commands
 deckcraft-cli run --sample --cmd 'slide.new={"layout":"titleOnly","title":"Hello"}' --save hello.deckcraft
 deckcraft-cli mcp                       # MCP server over stdio (headless)
 deckcraft-cli mcp --connect 7990        # drive the running app (deckcraft --control 7990)
+deckcraft-cli mcp --automation-read-root DIR --automation-write-root DIR   # confine the headless agent to folders
 ```
 
 ## Roadmap
 
-DeckCraft covers about **79% of PowerPoint's features by breadth** (93% of the core ones) and is
-roughly **80% of the way to a first alpha**. See [ROADMAP.md](ROADMAP.md) for the alpha checklist,
-parity estimates and what's next, and [docs/parity.md](docs/parity.md) for the feature-by-feature
-scorecard.
+DeckCraft is in **alpha**. It covers **84% of PowerPoint's features by breadth** (92% of the core
+ones, measured) and is about **55% of the way to replacing PowerPoint for real work** (estimated).
+See [ROADMAP.md](ROADMAP.md) for the stage, numbers by dimension and what's next,
+[docs/target-app-parity.md](docs/target-app-parity.md) for the full assessment,
+[docs/gaps.md](docs/gaps.md) for every known shortfall and
+[docs/parity-checklist.md](docs/parity-checklist.md) for the feature-by-feature checklist.
 
 ## Downloads
 
@@ -188,6 +194,10 @@ Remove-Item Env:WGPU_BACKEND                     # restore the default for later
 An explicit `gl` override can bring the driver crash back on affected systems. The macOS, Linux
 and web backend defaults are unchanged.
 
+DirectX 12 shaders are compiled with FXC, which is part of Windows, so no `dxcompiler.dll` or
+`dxil.dll` is needed ("Parent device is lost" at start, #153). `$env:WGPU_DX12_COMPILER = "dxc"`
+(or `"auto"`) selects wgpu's DXC handling again for troubleshooting.
+
 ### macOS
 
 | Build | File | Notes |
@@ -204,6 +214,8 @@ and web backend defaults are unchanged.
 | Debian/Ubuntu | `deckcraft-<ver>-linux-x86_64.deb` | `deckcraft-<ver>-linux-aarch64.deb` | |
 | Fedora/RHEL/openSUSE | `deckcraft-<ver>-linux-x86_64.rpm` | `deckcraft-<ver>-linux-aarch64.rpm` | |
 | Tarball | `deckcraft-<ver>-linux-x86_64.tar.gz` | `deckcraft-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
+
+RISC-V 64 (riscv64): `deckcraft-<ver>-linux-riscv64.tar.gz`, a tarball only (cross-compiled; needs glibc 2.39+, e.g. Ubuntu 24.04+).
 
 ### FreeBSD
 
