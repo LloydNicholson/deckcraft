@@ -290,7 +290,11 @@ mod tests {
     #[test]
     fn on_exit_ends_the_process_on_macos() {
         if std::env::var_os("DECKCRAFT_TEST_ON_EXIT").is_some() {
-            let mut app = App(SlideApp::new(Session::new(), Services::default()));
+            let mut app = App(
+                SlideApp::new(Session::new(), Services::default()),
+                #[cfg(target_os = "macos")]
+                fmv_macos_events::Inbox::default(),
+            );
             println!("calling on_exit");
             eframe::App::on_exit(&mut app);
             println!("on_exit returned");
